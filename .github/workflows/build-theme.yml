@@ -1,4 +1,4 @@
-name: Build JIWOONG Cat Bubble Theme
+name: Build JIWOONG BW FINAL
 
 on:
   workflow_dispatch:
@@ -14,157 +14,1352 @@ jobs:
       - name: Checkout
         uses: actions/checkout@v4
 
-      - name: Install ImageMagick
+      - name: Install tools
         shell: bash
         run: |
           sudo apt-get update
-          sudo apt-get install -y imagemagick
+          sudo apt-get install -y unzip zip
+          python3 -m pip install --upgrade pip
+          python3 -m pip install pillow numpy
 
-      - name: Extract base theme
+          # 去背功能。失敗也不會讓整個主題製作中止，
+          # 會自動改用圓形照片版本。
+          python3 -m pip install rembg onnxruntime || true
+
+      - name: Extract original theme
         shell: bash
         run: |
           set -e
           rm -rf theme
           mkdir theme
           unzip -q mangdaeng.ktheme -d theme
+          test -f theme/KakaoTalkTheme.css
           test -d theme/Images
 
-      - name: Create cat ear bubbles
+      - name: Build full JIWOONG design
         shell: bash
         run: |
           set -e
 
           python3 <<'PY'
+          from PIL import Image, ImageDraw, ImageOps
           import os
-          import subprocess
+          import glob
+          import math
 
-          imgdir = "theme/Images"
+          ROOT = "theme"
+          IMG = os.path.join(ROOT, "Images")
 
-          groups = [
-              ("chatroomBubbleReceive01", "receive", False),
-              ("chatroomBubbleReceive01Selected", "receive", True),
-              ("chatroomBubbleReceive02", "receive", False),
-              ("chatroomBubbleReceive02Selected", "receive", True),
-              ("chatroomBubbleSend01", "send", False),
-              ("chatroomBubbleSend01Selected", "send", True),
-              ("chatroomBubbleSend02", "send", False),
-              ("chatroomBubbleSend02Selected", "send", True),
+          # =========================================================
+          # 基本工具
+          # =========================================================
+
+          def open_rgba(path):
+              return Image.open(path).convert("RGBA")
+
+          def save_png(im, path):
+              im.save(path, "PNG", optimize=True)
+
+          def scale(v, s):
+              return max(1, int(round(v * s)))
+
+          def density_from_name(path):
+              if "@3x" in path:
+                  return 3
+              if "@2x" in path:
+                  return 2
+              return 3
+
+          def fit_contain(im, size):
+              im = im.copy()
+              im.thumbnail(size, Image.Resampling.LANCZOS)
+              return im
+
+          # =========================================================
+          # 地雄頭像
+          # =========================================================
+
+          photo_candidates = [
+              "IMG_5895.png",
+              "IMG_5895.jpg",
+              "IMG_5895.jpeg",
           ]
 
-          def dimensions(path):
-              out = subprocess.check_output(
-                  ["identify", "-format", "%w %h", path],
-                  text=True
-              ).strip()
-              w, h = map(int, out.split())
-              return w, h
+          photo_path = None
+          for p in photo_candidates:
+              if os.path.exists(p):
+                  photo_path = p
+                  break
 
-          def make_bubble(path, kind, selected):
-              w, h = dimensions(path)
+          if photo_path is None:
+              candidates = []
+              candidates += glob.glob("*.png")
+              candidates += glob.glob("*.jpg")
+              candidates += glob.glob("*.jpeg")
 
-              scale = 3 if "@3x" in path else 2
-
-              margin = max(2, round(2 * scale))
-              radius = max(6, round(7 * scale))
-              ear_w = max(6, round(7 * scale))
-              ear_h = max(5, round(6 * scale))
-
-              if kind == "receive":
-                  fill = "#FFFFFF" if not selected else "#F2F2F2"
-                  stroke = "#111111"
-                  ear_side = "left"
-              else:
-                  fill = "#111111" if not selected else "#333333"
-                  stroke = "#FFFFFF"
-                  ear_side = "right"
-
-              sw = max(1, round(1.2 * scale))
-
-              x1 = margin
-              y1 = ear_h + margin
-              x2 = w - margin - 1
-              y2 = h - margin - 1
-
-              if x2 <= x1 + 2:
-                  x1 = 1
-                  x2 = w - 2
-
-              if y2 <= y1 + 2:
-                  y1 = margin
-                  y2 = h - 2
-
-              draw = []
-
-              draw.append(
-                  f'roundrectangle {x1},{y1} {x2},{y2} {radius},{radius}'
-              )
-
-              if ear_side == "left":
-                  ex1 = x1 + radius
-                  ex2 = min(x2 - radius, ex1 + ear_w)
-                  peak = max(x1 + 1, ex1 - ear_w // 2)
-              else:
-                  ex2 = x2 - radius
-                  ex1 = max(x1 + radius, ex2 - ear_w)
-                  peak = min(x2 - 1, ex2 + ear_w // 2)
-
-              ear_bottom = y1 + max(1, sw)
-              ear_top = margin
-
-              if ear_side == "left":
-                  draw.append(
-                      f'polygon {ex1},{ear_bottom} {peak},{ear_top} {ex2},{ear_bottom}'
-                  )
-              else:
-                  draw.append(
-                      f'polygon {ex1},{ear_bottom} {peak},{ear_top} {ex2},{ear_bottom}'
-                  )
-
-              cmd = [
-                  "convert",
-                  "-size", f"{w}x{h}",
-                  "xc:none",
-                  "-fill", fill,
-                  "-stroke", stroke,
-                  "-strokewidth", str(sw),
-                  "-draw", " ".join(draw),
-                  path
+              candidates = [
+                  p for p in candidates
+                  if not p.startswith("JIWOONG_")
               ]
 
-              subprocess.run(cmd, check=True)
+              if candidates:
+                  photo_path = candidates[0]
 
-          for prefix, kind, selected in groups:
-              for density in ("@2x.png", "@3x.png"):
-                  path = os.path.join(imgdir, prefix + density)
-                  if not os.path.exists(path):
-                      print("Missing:", path)
-                      continue
+          head = None
 
-                  print("Creating:", path)
-                  make_bubble(path, kind, selected)
+          if photo_path:
+              source = open_rgba(photo_path)
+              w, h = source.size
+
+              # 原照片中心人物，上半身範圍
+              left = int(w * 0.27)
+              right = int(w * 0.73)
+              top = int(h * 0.02)
+              bottom = int(h * 0.72)
+
+              crop = source.crop((left, top, right, bottom))
+
+              # 優先 AI 去背
+              try:
+                  from rembg import remove
+
+                  result = remove(crop)
+                  if not isinstance(result, Image.Image):
+                      result = Image.open(result)
+
+                  result = result.convert("RGBA")
+
+                  alpha = result.getchannel("A")
+                  bbox = alpha.getbbox()
+
+                  if bbox:
+                      result = result.crop(bbox)
+                      head = result
+
+              except Exception as e:
+                  print("rembg unavailable, use fallback:", e)
+
+              # 去背失敗時保底：乾淨圓形人物照片
+              if head is None:
+                  cw, ch = crop.size
+                  side = min(cw, ch)
+                  x = (cw - side) // 2
+                  y = max(0, int(ch * 0.02))
+
+                  portrait = crop.crop(
+                      (
+                          x,
+                          y,
+                          x + side,
+                          min(ch, y + side)
+                      )
+                  )
+
+                  side = min(portrait.size)
+
+                  portrait = ImageOps.fit(
+                      portrait,
+                      (side, side),
+                      method=Image.Resampling.LANCZOS
+                  )
+
+                  mask = Image.new("L", (side, side), 0)
+                  md = ImageDraw.Draw(mask)
+                  md.ellipse((2, 2, side - 3, side - 3), fill=255)
+
+                  result = Image.new("RGBA", (side, side), (0,0,0,0))
+                  result.paste(portrait, (0,0), mask)
+                  head = result
+
+          # =========================================================
+          # 手繪小元素
+          # =========================================================
+
+          def draw_heart(draw, cx, cy, s, color, width):
+              pts = []
+              for i in range(101):
+                  t = math.pi * 2 * i / 100
+                  x = 16 * math.sin(t) ** 3
+                  y = (
+                      13 * math.cos(t)
+                      - 5 * math.cos(2*t)
+                      - 2 * math.cos(3*t)
+                      - math.cos(4*t)
+                  )
+                  pts.append(
+                      (
+                          cx + x * s / 32,
+                          cy - y * s / 32
+                      )
+                  )
+              draw.line(pts, fill=color, width=width, joint="curve")
+
+          def draw_clover(draw, cx, cy, s, color, width):
+              r = s * 0.18
+
+              for dx, dy in [
+                  (-r, -r),
+                  (r, -r),
+                  (-r, r),
+                  (r, r),
+              ]:
+                  draw.ellipse(
+                      (
+                          cx + dx - r,
+                          cy + dy - r,
+                          cx + dx + r,
+                          cy + dy + r,
+                      ),
+                      outline=color,
+                      width=width
+                  )
+
+              draw.line(
+                  (
+                      cx,
+                      cy + r,
+                      cx + s * 0.14,
+                      cy + s * 0.48
+                  ),
+                  fill=color,
+                  width=width
+              )
+
+          def draw_butterfly(draw, cx, cy, s, color, width):
+              r = s * 0.22
+
+              draw.ellipse(
+                  (
+                      cx - r * 2.0,
+                      cy - r * 1.4,
+                      cx - r * 0.25,
+                      cy + r * 0.1
+                  ),
+                  outline=color,
+                  width=width
+              )
+
+              draw.ellipse(
+                  (
+                      cx + r * 0.25,
+                      cy - r * 1.4,
+                      cx + r * 2.0,
+                      cy + r * 0.1
+                  ),
+                  outline=color,
+                  width=width
+              )
+
+              draw.ellipse(
+                  (
+                      cx - r * 1.6,
+                      cy,
+                      cx - r * 0.15,
+                      cy + r * 1.5
+                  ),
+                  outline=color,
+                  width=width
+              )
+
+              draw.ellipse(
+                  (
+                      cx + r * 0.15,
+                      cy,
+                      cx + r * 1.6,
+                      cy + r * 1.5
+                  ),
+                  outline=color,
+                  width=width
+              )
+
+              draw.line(
+                  (
+                      cx,
+                      cy - r,
+                      cx,
+                      cy + r * 1.3
+                  ),
+                  fill=color,
+                  width=width
+              )
+
+          def draw_cat(draw, cx, cy, s, color, width, filled=False):
+              r = s * 0.32
+
+              if filled:
+                  draw.ellipse(
+                      (
+                          cx-r,
+                          cy-r,
+                          cx+r,
+                          cy+r
+                      ),
+                      fill=color
+                  )
+
+                  draw.polygon(
+                      [
+                          (cx-r*0.8, cy-r*0.55),
+                          (cx-r*0.95, cy-r*1.35),
+                          (cx-r*0.15, cy-r*0.8)
+                      ],
+                      fill=color
+                  )
+
+                  draw.polygon(
+                      [
+                          (cx+r*0.8, cy-r*0.55),
+                          (cx+r*0.95, cy-r*1.35),
+                          (cx+r*0.15, cy-r*0.8)
+                      ],
+                      fill=color
+                  )
+
+                  return
+
+              draw.ellipse(
+                  (
+                      cx-r,
+                      cy-r,
+                      cx+r,
+                      cy+r
+                  ),
+                  outline=color,
+                  width=width
+              )
+
+              draw.line(
+                  (
+                      cx-r*0.72,
+                      cy-r*0.58,
+                      cx-r*0.9,
+                      cy-r*1.22,
+                      cx-r*0.1,
+                      cy-r*0.78
+                  ),
+                  fill=color,
+                  width=width
+              )
+
+              draw.line(
+                  (
+                      cx+r*0.72,
+                      cy-r*0.58,
+                      cx+r*0.9,
+                      cy-r*1.22,
+                      cx+r*0.1,
+                      cy-r*0.78
+                  ),
+                  fill=color,
+                  width=width
+              )
+
+              draw.ellipse(
+                  (
+                      cx-r*0.42,
+                      cy-r*0.1,
+                      cx-r*0.28,
+                      cy+r*0.04
+                  ),
+                  fill=color
+              )
+
+              draw.ellipse(
+                  (
+                      cx+r*0.28,
+                      cy-r*0.1,
+                      cx+r*0.42,
+                      cy+r*0.04
+                  ),
+                  fill=color
+              )
+
+          def draw_penguin(draw, cx, cy, s, color, width):
+              rw = s * 0.28
+              rh = s * 0.38
+
+              draw.ellipse(
+                  (
+                      cx-rw,
+                      cy-rh,
+                      cx+rw,
+                      cy+rh
+                  ),
+                  outline=color,
+                  width=width
+              )
+
+              draw.ellipse(
+                  (
+                      cx-rw*0.55,
+                      cy-rh*0.15,
+                      cx+rw*0.55,
+                      cy+rh*0.7
+                  ),
+                  outline=color,
+                  width=width
+              )
+
+              draw.polygon(
+                  [
+                      (cx, cy),
+                      (cx+s*0.08, cy+s*0.05),
+                      (cx, cy+s*0.1),
+                  ],
+                  outline=color
+              )
+
+          def draw_tiger(draw, cx, cy, s, color, width):
+              r = s * 0.31
+
+              draw.ellipse(
+                  (
+                      cx-r,
+                      cy-r,
+                      cx+r,
+                      cy+r
+                  ),
+                  outline=color,
+                  width=width
+              )
+
+              draw.arc(
+                  (
+                      cx-r*1.15,
+                      cy-r*1.15,
+                      cx-r*0.25,
+                      cy-r*0.25
+                  ),
+                  180,
+                  350,
+                  fill=color,
+                  width=width
+              )
+
+              draw.arc(
+                  (
+                      cx+r*0.25,
+                      cy-r*1.15,
+                      cx+r*1.15,
+                      cy-r*0.25
+                  ),
+                  190,
+                  360,
+                  fill=color,
+                  width=width
+              )
+
+              for dx in (-0.25, 0, 0.25):
+                  draw.line(
+                      (
+                          cx + r*dx,
+                          cy-r*0.75,
+                          cx + r*dx*0.7,
+                          cy-r*0.25
+                      ),
+                      fill=color,
+                      width=width
+                  )
+
+              draw.ellipse(
+                  (
+                      cx-r*0.38,
+                      cy-r*0.05,
+                      cx-r*0.24,
+                      cy+r*0.08
+                  ),
+                  fill=color
+              )
+
+              draw.ellipse(
+                  (
+                      cx+r*0.24,
+                      cy-r*0.05,
+                      cx+r*0.38,
+                      cy+r*0.08
+                  ),
+                  fill=color
+              )
+
+          # =========================================================
+          # 背景
+          # =========================================================
+
+          def make_background(path, chat=False):
+              old = open_rgba(path)
+              w, h = old.size
+
+              bg = Image.new(
+                  "RGBA",
+                  (w, h),
+                  (255,255,255,255)
+              )
+
+              d = ImageDraw.Draw(bg)
+
+              line = (26,26,26,70)
+              soft = (26,26,26,38)
+
+              unit = max(10, w // 35)
+              lw = max(2, w // 520)
+
+              if chat:
+                  # 聊天頁更乾淨
+                  draw_heart(
+                      d,
+                      int(w*0.13),
+                      int(h*0.13),
+                      unit*2.0,
+                      soft,
+                      lw
+                  )
+
+                  draw_clover(
+                      d,
+                      int(w*0.85),
+                      int(h*0.22),
+                      unit*2.1,
+                      soft,
+                      lw
+                  )
+
+                  draw_butterfly(
+                      d,
+                      int(w*0.18),
+                      int(h*0.72),
+                      unit*2.1,
+                      soft,
+                      lw
+                  )
+
+                  draw_cat(
+                      d,
+                      int(w*0.84),
+                      int(h*0.82),
+                      unit*2.3,
+                      soft,
+                      lw
+                  )
+
+                  draw.line(
+                      (
+                          int(w*0.10),
+                          int(h*0.48),
+                          int(w*0.20),
+                          int(h*0.46)
+                      ),
+                      fill=soft,
+                      width=lw
+                  )
+
+                  draw.line(
+                      (
+                          int(w*0.80),
+                          int(h*0.57),
+                          int(w*0.90),
+                          int(h*0.55)
+                      ),
+                      fill=soft,
+                      width=lw
+                  )
+
+              else:
+                  # 主頁四種代表元素
+                  draw_penguin(
+                      d,
+                      int(w*0.14),
+                      int(h*0.18),
+                      unit*2.8,
+                      line,
+                      lw
+                  )
+
+                  draw_tiger(
+                      d,
+                      int(w*0.86),
+                      int(h*0.18),
+                      unit*2.8,
+                      line,
+                      lw
+                  )
+
+                  draw_cat(
+                      d,
+                      int(w*0.15),
+                      int(h*0.78),
+                      unit*2.7,
+                      line,
+                      lw,
+                      filled=True
+                  )
+
+                  draw_butterfly(
+                      d,
+                      int(w*0.85),
+                      int(h*0.78),
+                      unit*2.7,
+                      line,
+                      lw
+                  )
+
+                  draw_clover(
+                      d,
+                      int(w*0.12),
+                      int(h*0.48),
+                      unit*1.8,
+                      soft,
+                      lw
+                  )
+
+                  draw_heart(
+                      d,
+                      int(w*0.88),
+                      int(h*0.47),
+                      unit*1.8,
+                      soft,
+                      lw
+                  )
+
+                  draw_heart(
+                      d,
+                      int(w*0.50),
+                      int(h*0.20),
+                      unit*1.3,
+                      soft,
+                      lw
+                  )
+
+                  draw_clover(
+                      d,
+                      int(w*0.50),
+                      int(h*0.72),
+                      unit*1.3,
+                      soft,
+                      lw
+                  )
+
+              save_png(bg, path)
+
+          chat_bg = os.path.join(IMG, "chatroomBgImage@3x.png")
+          main_bg = os.path.join(IMG, "mainBgImage@3x.png")
+
+          if os.path.exists(chat_bg):
+              make_background(chat_bg, chat=True)
+
+          if os.path.exists(main_bg):
+              make_background(main_bg, chat=False)
+
+          # =========================================================
+          # 貓耳聊天氣泡
+          # =========================================================
+
+          bubble_files = sorted(
+              glob.glob(os.path.join(IMG, "chatroomBubble*.png"))
+          )
+
+          def make_bubble(path):
+              old = open_rgba(path)
+              w, h = old.size
+
+              name = os.path.basename(path)
+
+              send = "Send" in name
+              selected = "Selected" in name
+              first = "01" in name
+              den = density_from_name(path)
+
+              im = Image.new(
+                  "RGBA",
+                  (w,h),
+                  (0,0,0,0)
+              )
+
+              d = ImageDraw.Draw(im)
+
+              if send:
+                  fill = (
+                      (20,20,20,255)
+                      if not selected
+                      else (48,48,48,255)
+                  )
+                  stroke = (20,20,20,255)
+              else:
+                  fill = (
+                      (255,255,255,255)
+                      if not selected
+                      else (238,238,238,255)
+                  )
+                  stroke = (20,20,20,255)
+
+              sw = max(2, den)
+              margin = 4 * den
+
+              # 01 上方留位置給地雄探頭
+              head_space = int(h * 0.32) if first else 0
+
+              top = margin + head_space
+              bottom = h - margin
+              left = margin
+              right = w - margin
+
+              radius = max(
+                  10,
+                  int(min(w,h) * 0.17)
+              )
+
+              d.rounded_rectangle(
+                  (
+                      left,
+                      top,
+                      right,
+                      bottom
+                  ),
+                  radius=radius,
+                  fill=fill,
+                  outline=stroke,
+                  width=sw
+              )
+
+              # 貓耳
+              ear_w = max(
+                  12,
+                  int(w * 0.16)
+              )
+
+              ear_h = max(
+                  10,
+                  int(h * 0.10)
+              )
+
+              if send:
+                  ex = right - radius - ear_w
+              else:
+                  ex = left + radius
+
+              pts = [
+                  (
+                      ex,
+                      top + sw
+                  ),
+                  (
+                      ex + ear_w * 0.50,
+                      top - ear_h
+                  ),
+                  (
+                      ex + ear_w,
+                      top + sw
+                  ),
+              ]
+
+              d.polygon(
+                  pts,
+                  fill=fill
+              )
+
+              d.line(
+                  pts,
+                  fill=stroke,
+                  width=sw,
+                  joint="curve"
+              )
+
+              # 輕微手繪小愛心
+              if not first:
+                  heart_size = max(
+                      10,
+                      int(min(w,h)*0.13)
+                  )
+
+                  hx = (
+                      left + radius
+                      if send
+                      else right - radius
+                  )
+
+                  hy = top + radius
+
+                  hc = (
+                      (255,255,255,150)
+                      if send
+                      else (20,20,20,90)
+                  )
+
+                  draw_heart(
+                      d,
+                      hx,
+                      hy,
+                      heart_size,
+                      hc,
+                      max(1, den-1)
+                  )
+
+              # 01：地雄從氣泡上方探頭
+              if first and head is not None:
+                  target_w = int(w * 0.43)
+
+                  hh = fit_contain(
+                      head,
+                      (
+                          target_w,
+                          int(h * 0.39)
+                      )
+                  )
+
+                  # 加白色小描邊讓照片在黑白背景都清楚
+                  alpha = hh.getchannel("A")
+
+                  border = Image.new(
+                      "L",
+                      hh.size,
+                      0
+                  )
+
+                  bd = ImageDraw.Draw(border)
+
+                  # 用 MaxFilter 擴張透明區做白邊
+                  from PIL import ImageFilter
+                  border = alpha.filter(
+                      ImageFilter.MaxFilter(
+                          max(3, den*2+1)
+                      )
+                  )
+
+                  outline = Image.new(
+                      "RGBA",
+                      hh.size,
+                      (255,255,255,0)
+                  )
+
+                  outline.putalpha(border)
+
+                  if send:
+                      px = right - hh.width - int(w*0.03)
+                  else:
+                      px = left + int(w*0.03)
+
+                  py = max(
+                      0,
+                      top - hh.height + den*2
+                  )
+
+                  im.alpha_composite(
+                      outline,
+                      (px,py)
+                  )
+
+                  im.alpha_composite(
+                      hh,
+                      (px,py)
+                  )
+
+              save_png(im, path)
+
+          for p in bubble_files:
+              make_bubble(p)
+
+          # =========================================================
+          # Tab Bar 背景
+          # =========================================================
+
+          for path in glob.glob(
+              os.path.join(IMG, "maintabBgImage@*.png")
+          ):
+              old = open_rgba(path)
+              w,h = old.size
+
+              im = Image.new(
+                  "RGBA",
+                  (w,h),
+                  (255,255,255,255)
+              )
+
+              d = ImageDraw.Draw(im)
+
+              lw = max(1, h//45)
+
+              d.line(
+                  (0,1,w,1),
+                  fill=(25,25,25,65),
+                  width=lw
+              )
+
+              save_png(im,path)
+
+          # =========================================================
+          # Tab 圖示
+          # =========================================================
+
+          def make_tab_icon(path):
+              old = open_rgba(path)
+              w,h = old.size
+
+              selected = "Selected" in path
+
+              im = Image.new(
+                  "RGBA",
+                  (w,h),
+                  (0,0,0,0)
+              )
+
+              d = ImageDraw.Draw(im)
+
+              cx = w/2
+              cy = h/2
+
+              s = min(w,h) * 0.82
+
+              c = (
+                  (15,15,15,255)
+                  if selected
+                  else (75,75,75,255)
+              )
+
+              lw = max(
+                  2,
+                  int(min(w,h)*0.07)
+              )
+
+              name = os.path.basename(path)
+
+              if "Friends" in name:
+                  draw_cat(
+                      d,
+                      cx,
+                      cy+s*0.06,
+                      s,
+                      c,
+                      lw,
+                      filled=selected
+                  )
+
+              elif "Chats" in name:
+                  x1 = cx-s*0.38
+                  y1 = cy-s*0.26
+                  x2 = cx+s*0.38
+                  y2 = cy+s*0.22
+
+                  d.rounded_rectangle(
+                      (
+                          x1,y1,x2,y2
+                      ),
+                      radius=s*0.12,
+                      outline=c,
+                      width=lw
+                  )
+
+                  d.line(
+                      (
+                          cx+s*0.08,
+                          y2,
+                          cx+s*0.24,
+                          y2+s*0.18,
+                          cx+s*0.22,
+                          y2
+                      ),
+                      fill=c,
+                      width=lw
+                  )
+
+                  draw_heart(
+                      d,
+                      cx,
+                      cy-s*0.02,
+                      s*0.25,
+                      c,
+                      max(1,lw-1)
+                  )
+
+              elif "Now" in name:
+                  draw_penguin(
+                      d,
+                      cx,
+                      cy,
+                      s,
+                      c,
+                      lw
+                  )
+
+              elif "Piccoma" in name:
+                  draw_tiger(
+                      d,
+                      cx,
+                      cy,
+                      s,
+                      c,
+                      lw
+                  )
+
+              elif "Call" in name:
+                  draw_butterfly(
+                      d,
+                      cx,
+                      cy,
+                      s,
+                      c,
+                      lw
+                  )
+
+              elif "Shopping" in name:
+                  # 小購物袋＋愛心
+                  x1 = cx-s*0.32
+                  y1 = cy-s*0.15
+                  x2 = cx+s*0.32
+                  y2 = cy+s*0.34
+
+                  d.rounded_rectangle(
+                      (
+                          x1,y1,x2,y2
+                      ),
+                      radius=s*0.08,
+                      outline=c,
+                      width=lw
+                  )
+
+                  d.arc(
+                      (
+                          cx-s*0.18,
+                          cy-s*0.34,
+                          cx+s*0.18,
+                          cy+s*0.02
+                      ),
+                      180,
+                      360,
+                      fill=c,
+                      width=lw
+                  )
+
+                  draw_heart(
+                      d,
+                      cx,
+                      cy+s*0.11,
+                      s*0.22,
+                      c,
+                      max(1,lw-1)
+                  )
+
+              else:
+                  draw_clover(
+                      d,
+                      cx,
+                      cy,
+                      s*0.78,
+                      c,
+                      lw
+                  )
+
+              save_png(im,path)
+
+          for p in glob.glob(
+              os.path.join(IMG, "maintabIco*.png")
+          ):
+              make_tab_icon(p)
+
+          # =========================================================
+          # 預設頭像：黑貓
+          # =========================================================
+
+          profile = os.path.join(
+              IMG,
+              "profileImg01@3x.png"
+          )
+
+          if os.path.exists(profile):
+              old = open_rgba(profile)
+              w,h = old.size
+
+              im = Image.new(
+                  "RGBA",
+                  (w,h),
+                  (255,255,255,255)
+              )
+
+              d = ImageDraw.Draw(im)
+
+              draw_cat(
+                  d,
+                  w/2,
+                  h/2,
+                  min(w,h)*0.78,
+                  (20,20,20,255),
+                  max(3,int(min(w,h)*0.025)),
+                  filled=True
+              )
+
+              save_png(im,profile)
+
+          # =========================================================
+          # 加好友按鈕：愛心＋
+          # =========================================================
+
+          for p in glob.glob(
+              os.path.join(
+                  IMG,
+                  "findBtnAddFriend@*.png"
+              )
+          ):
+              old = open_rgba(p)
+              w,h = old.size
+
+              im = Image.new(
+                  "RGBA",
+                  (w,h),
+                  (0,0,0,0)
+              )
+
+              d = ImageDraw.Draw(im)
+
+              c = (20,20,20,255)
+
+              lw = max(
+                  2,
+                  int(min(w,h)*0.07)
+              )
+
+              draw_heart(
+                  d,
+                  w*0.43,
+                  h*0.52,
+                  min(w,h)*0.6,
+                  c,
+                  lw
+              )
+
+              d.line(
+                  (
+                      w*0.72,
+                      h*0.35,
+                      w*0.72,
+                      h*0.70
+                  ),
+                  fill=c,
+                  width=lw
+              )
+
+              d.line(
+                  (
+                      w*0.58,
+                      h*0.52,
+                      w*0.86,
+                      h*0.52
+                  ),
+                  fill=c,
+                  width=lw
+              )
+
+              save_png(im,p)
+
+          # =========================================================
+          # 密碼頁
+          # =========================================================
+
+          passbg = os.path.join(
+              IMG,
+              "passcodeBgImage@3x.png"
+          )
+
+          if os.path.exists(passbg):
+              old = open_rgba(passbg)
+              w,h = old.size
+
+              im = Image.new(
+                  "RGBA",
+                  (w,h),
+                  (255,255,255,255)
+              )
+
+              d = ImageDraw.Draw(im)
+
+              c = (20,20,20,45)
+
+              draw_clover(
+                  d,
+                  w*0.15,
+                  h*0.20,
+                  min(w,h)*0.13,
+                  c,
+                  max(2,w//500)
+              )
+
+              draw_heart(
+                  d,
+                  w*0.84,
+                  h*0.72,
+                  min(w,h)*0.12,
+                  c,
+                  max(2,w//500)
+              )
+
+              save_png(im,passbg)
+
+          for p in glob.glob(
+              os.path.join(
+                  IMG,
+                  "passcodeImgCode*.png"
+              )
+          ):
+              old = open_rgba(p)
+              w,h = old.size
+
+              selected = "Selected" in p
+
+              im = Image.new(
+                  "RGBA",
+                  (w,h),
+                  (0,0,0,0)
+              )
+
+              d = ImageDraw.Draw(im)
+
+              c = (
+                  (20,20,20,255)
+                  if selected
+                  else (20,20,20,120)
+              )
+
+              draw_heart(
+                  d,
+                  w/2,
+                  h/2,
+                  min(w,h)*0.72,
+                  c,
+                  max(2,int(min(w,h)*0.08))
+              )
+
+              save_png(im,p)
+
+          print("FINAL design generated successfully.")
 
           PY
 
-      - name: Change theme identity
+      - name: Update CSS colors
         shell: bash
         run: |
           set -e
 
           CSS="theme/KakaoTalkTheme.css"
 
-          sed -i \
-            "s/-kakaotalk-theme-name:[^;]*/-kakaotalk-theme-name: 'JIWOONG BW CAT'/g" \
-            "$CSS"
+          python3 <<'PY'
+          from pathlib import Path
+          import re
 
-          sed -i \
-            "s/-kakaotalk-theme-id:[^;]*/-kakaotalk-theme-id: 'com.jiwoong.bw.cat.theme'/g" \
-            "$CSS"
+          path = Path("theme/KakaoTalkTheme.css")
+          css = path.read_text(
+              encoding="utf-8",
+              errors="ignore"
+          )
 
-          sed -i \
-            "s/-kakaotalk-author-name:[^;]*/-kakaotalk-author-name: 'UO'/g" \
-            "$CSS"
+          css = re.sub(
+              r"-kakaotalk-theme-name:[^;]*;",
+              "-kakaotalk-theme-name: 'JIWOONG BW';",
+              css
+          )
 
-      - name: Build ktheme
+          css = re.sub(
+              r"-kakaotalk-theme-id:[^;]*;",
+              "-kakaotalk-theme-id: 'com.jiwoong.bw.final';",
+              css
+          )
+
+          css = re.sub(
+              r"-kakaotalk-author-name:[^;]*;",
+              "-kakaotalk-author-name: 'UO';",
+              css
+          )
+
+          # 整體底色改為黑白
+          css = css.replace(
+              "background-color: #FFFCEE;",
+              "background-color: #FFFFFF;"
+          )
+
+          css = css.replace(
+              "background-color: #FFDEDE;",
+              "background-color: #FFFFFF;"
+          )
+
+          css = css.replace(
+              "#FFF8DA",
+              "#F4F4F4"
+          )
+
+          css = css.replace(
+              "#686868",
+              "#171717"
+          )
+
+          css = css.replace(
+              "#797979",
+              "#555555"
+          )
+
+          css = css.replace(
+              "#848484",
+              "#777777"
+          )
+
+          css = css.replace(
+              "#589AC2",
+              "#111111"
+          )
+
+          css = css.replace(
+              "#70C8FF",
+              "#333333"
+          )
+
+          # 黑色送出氣泡 → 白字
+          css = re.sub(
+              r"(MessageCellStyle-Send\s*\{.*?"
+              r"-ios-text-color:)\s*#[0-9A-Fa-f]{6};",
+              r"\1 #FFFFFF;",
+              css,
+              flags=re.S
+          )
+
+          css = re.sub(
+              r"(MessageCellStyle-Send\s*\{.*?"
+              r"-ios-selected-text-color:)\s*#[0-9A-Fa-f]{6};",
+              r"\1 #FFFFFF;",
+              css,
+              flags=re.S
+          )
+
+          # 白色收到氣泡 → 黑字
+          css = re.sub(
+              r"(MessageCellStyle-Receive\s*\{.*?"
+              r"-ios-text-color:)\s*#[0-9A-Fa-f]{6};",
+              r"\1 #171717;",
+              css,
+              flags=re.S
+          )
+
+          css = re.sub(
+              r"(MessageCellStyle-Receive\s*\{.*?"
+              r"-ios-selected-text-color:)\s*#[0-9A-Fa-f]{6};",
+              r"\1 #171717;",
+              css,
+              flags=re.S
+          )
+
+          # Input Bar 黑白
+          css = css.replace(
+              "-ios-send-normal-background-color: #111111;",
+              "-ios-send-normal-background-color: #111111;"
+          )
+
+          css = css.replace(
+              "-ios-send-normal-foreground-color: #FFFFFF;",
+              "-ios-send-normal-foreground-color: #FFFFFF;"
+          )
+
+          path.write_text(
+              css,
+              encoding="utf-8"
+          )
+
+          PY
+
+      - name: Repack final ktheme
         shell: bash
         run: |
           set -e
@@ -172,13 +1367,17 @@ jobs:
           rm -f JIWOONG_BW.ktheme
 
           cd theme
+
           zip -q -r ../JIWOONG_BW.ktheme .
+
           cd ..
 
           unzip -t JIWOONG_BW.ktheme
+
+          echo "FINAL THEME:"
           ls -lh JIWOONG_BW.ktheme
 
-      - name: Commit theme
+      - name: Commit final theme
         shell: bash
         run: |
           set -e
@@ -191,6 +1390,6 @@ jobs:
           if git diff --cached --quiet; then
             echo "No changes."
           else
-            git commit -m "Build JIWOONG cat bubble theme"
+            git commit -m "Build final JIWOONG BW theme"
             git push
           fi
