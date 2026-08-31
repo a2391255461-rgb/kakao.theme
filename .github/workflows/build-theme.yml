@@ -64,7 +64,7 @@ jobs:
 
           mkdir -p theme/Images
 
-          magick "$PHOTO" \
+         convert "$PHOTO" \
             -auto-orient \
             -gravity center \
             -crop "70%x58%+0-12%" +repage \
