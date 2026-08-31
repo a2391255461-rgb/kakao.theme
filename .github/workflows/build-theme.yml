@@ -1,4 +1,4 @@
-name: Build JIWOONG KakaoTalk Theme
+name: Inspect KakaoTalk Theme
 
 on:
   workflow_dispatch:
@@ -7,82 +7,48 @@ permissions:
   contents: write
 
 jobs:
-  build:
+  inspect:
     runs-on: ubuntu-latest
 
     steps:
       - name: Checkout
         uses: actions/checkout@v4
 
-      - name: Find files
-        shell: bash
-        run: |
-          set -e
-          THEME=$(find . -maxdepth 1 -type f -iname "mangdaeng.ktheme" | head -1)
-          PHOTO=$(find . -maxdepth 1 -type f \( -iname "*.jpg" -o -iname "*.jpeg" -o -iname "*.png" \) | head -1)
-
-          if [ -z "$THEME" ]; then
-            echo "mangdaeng.ktheme not found"
-            exit 1
-          fi
-
-          if [ -z "$PHOTO" ]; then
-            echo "photo not found"
-            exit 1
-          fi
-
-          echo "THEME=$THEME" >> "$GITHUB_ENV"
-          echo "PHOTO=$PHOTO" >> "$GITHUB_ENV"
-
-      - name: Install ImageMagick
-        shell: bash
-        run: |
-          sudo apt-get update
-          sudo apt-get install -y imagemagick
-
-      - name: Extract theme
+      - name: Extract original theme
         shell: bash
         run: |
           set -e
           rm -rf theme
           mkdir theme
-          unzip -q "$THEME" -d theme
-          test -f theme/KakaoTalkTheme.css
+          unzip -q mangdaeng.ktheme -d theme
 
-      - name: Create Jiwoong image
+      - name: Create file list
         shell: bash
         run: |
           set -e
-          mkdir -p theme/Images
-          convert "$PHOTO" -auto-orient -gravity center -crop "70%x58%+0+0" +repage -resize "370x310>" theme/Images/jiwoong_head.png
-          test -f theme/Images/jiwoong_head.png
+          echo "=== ALL THEME FILES ===" > theme-file-list.txt
+          find theme -type f | sort >> theme-file-list.txt
 
-      - name: Edit theme
-        shell: bash
-        run: |
-          set -e
-          CSS="theme/KakaoTalkTheme.css"
-          sed -i "s/-kakaotalk-theme-name:[^;]*/-kakaotalk-theme-name: 'JIWOONG BW'/g" "$CSS"
-          sed -i "s/-kakaotalk-theme-id:[^;]*/-kakaotalk-theme-id: 'com.jiwoong.bw.theme'/g" "$CSS"
-          sed -i "s/-kakaotalk-author-name:[^;]*/-kakaotalk-author-name: 'UO'/g" "$CSS"
+          echo "" >> theme-file-list.txt
+          echo "=== IMAGE FILES ===" >> theme-file-list.txt
+          find theme/Images -type f | sort >> theme-file-list.txt
 
-      - name: Build ktheme
-        shell: bash
-        run: |
-          set -e
-          rm -f JIWOONG_BW.ktheme
-          cd theme
-          zip -q -r ../JIWOONG_BW.ktheme .
-          cd ..
-          unzip -t JIWOONG_BW.ktheme
-          ls -lh JIWOONG_BW.ktheme
+          echo ""
+          echo "Theme file list:"
+          cat theme-file-list.txt
 
-      - name: Commit ktheme
+      - name: Commit file list
         shell: bash
         run: |
           set -e
           git config user.name "github-actions[bot]"
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
-          git add JIWOONG_BW.ktheme
-          git diff --cached --quiet || git commit -m "Build JIWOONG BW theme"
-          git diff HEAD^ HEAD --quiet -- JIWOONG_BW.ktheme || git push
+
+          git add theme-file-list.txt
+
+          if git diff --cached --quiet; then
+            echo "No changes."
+          else
+            git commit -m "Add KakaoTalk theme file list"
+            git push
+          fi
