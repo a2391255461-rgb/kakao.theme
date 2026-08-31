@@ -1,4 +1,4 @@
-name: Inspect KakaoTalk Theme
+name: Build JIWOONG Cat Bubble Theme
 
 on:
   workflow_dispatch:
@@ -7,48 +7,190 @@ permissions:
   contents: write
 
 jobs:
-  inspect:
+  build:
     runs-on: ubuntu-latest
 
     steps:
       - name: Checkout
         uses: actions/checkout@v4
 
-      - name: Extract original theme
+      - name: Install ImageMagick
+        shell: bash
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y imagemagick
+
+      - name: Extract base theme
         shell: bash
         run: |
           set -e
           rm -rf theme
           mkdir theme
           unzip -q mangdaeng.ktheme -d theme
+          test -d theme/Images
 
-      - name: Create file list
+      - name: Create cat ear bubbles
         shell: bash
         run: |
           set -e
-          echo "=== ALL THEME FILES ===" > theme-file-list.txt
-          find theme -type f | sort >> theme-file-list.txt
 
-          echo "" >> theme-file-list.txt
-          echo "=== IMAGE FILES ===" >> theme-file-list.txt
-          find theme/Images -type f | sort >> theme-file-list.txt
+          python3 <<'PY'
+          import os
+          import subprocess
 
-          echo ""
-          echo "Theme file list:"
-          cat theme-file-list.txt
+          imgdir = "theme/Images"
 
-      - name: Commit file list
+          groups = [
+              ("chatroomBubbleReceive01", "receive", False),
+              ("chatroomBubbleReceive01Selected", "receive", True),
+              ("chatroomBubbleReceive02", "receive", False),
+              ("chatroomBubbleReceive02Selected", "receive", True),
+              ("chatroomBubbleSend01", "send", False),
+              ("chatroomBubbleSend01Selected", "send", True),
+              ("chatroomBubbleSend02", "send", False),
+              ("chatroomBubbleSend02Selected", "send", True),
+          ]
+
+          def dimensions(path):
+              out = subprocess.check_output(
+                  ["identify", "-format", "%w %h", path],
+                  text=True
+              ).strip()
+              w, h = map(int, out.split())
+              return w, h
+
+          def make_bubble(path, kind, selected):
+              w, h = dimensions(path)
+
+              scale = 3 if "@3x" in path else 2
+
+              margin = max(2, round(2 * scale))
+              radius = max(6, round(7 * scale))
+              ear_w = max(6, round(7 * scale))
+              ear_h = max(5, round(6 * scale))
+
+              if kind == "receive":
+                  fill = "#FFFFFF" if not selected else "#F2F2F2"
+                  stroke = "#111111"
+                  ear_side = "left"
+              else:
+                  fill = "#111111" if not selected else "#333333"
+                  stroke = "#FFFFFF"
+                  ear_side = "right"
+
+              sw = max(1, round(1.2 * scale))
+
+              x1 = margin
+              y1 = ear_h + margin
+              x2 = w - margin - 1
+              y2 = h - margin - 1
+
+              if x2 <= x1 + 2:
+                  x1 = 1
+                  x2 = w - 2
+
+              if y2 <= y1 + 2:
+                  y1 = margin
+                  y2 = h - 2
+
+              draw = []
+
+              draw.append(
+                  f'roundrectangle {x1},{y1} {x2},{y2} {radius},{radius}'
+              )
+
+              if ear_side == "left":
+                  ex1 = x1 + radius
+                  ex2 = min(x2 - radius, ex1 + ear_w)
+                  peak = max(x1 + 1, ex1 - ear_w // 2)
+              else:
+                  ex2 = x2 - radius
+                  ex1 = max(x1 + radius, ex2 - ear_w)
+                  peak = min(x2 - 1, ex2 + ear_w // 2)
+
+              ear_bottom = y1 + max(1, sw)
+              ear_top = margin
+
+              if ear_side == "left":
+                  draw.append(
+                      f'polygon {ex1},{ear_bottom} {peak},{ear_top} {ex2},{ear_bottom}'
+                  )
+              else:
+                  draw.append(
+                      f'polygon {ex1},{ear_bottom} {peak},{ear_top} {ex2},{ear_bottom}'
+                  )
+
+              cmd = [
+                  "convert",
+                  "-size", f"{w}x{h}",
+                  "xc:none",
+                  "-fill", fill,
+                  "-stroke", stroke,
+                  "-strokewidth", str(sw),
+                  "-draw", " ".join(draw),
+                  path
+              ]
+
+              subprocess.run(cmd, check=True)
+
+          for prefix, kind, selected in groups:
+              for density in ("@2x.png", "@3x.png"):
+                  path = os.path.join(imgdir, prefix + density)
+                  if not os.path.exists(path):
+                      print("Missing:", path)
+                      continue
+
+                  print("Creating:", path)
+                  make_bubble(path, kind, selected)
+
+          PY
+
+      - name: Change theme identity
         shell: bash
         run: |
           set -e
+
+          CSS="theme/KakaoTalkTheme.css"
+
+          sed -i \
+            "s/-kakaotalk-theme-name:[^;]*/-kakaotalk-theme-name: 'JIWOONG BW CAT'/g" \
+            "$CSS"
+
+          sed -i \
+            "s/-kakaotalk-theme-id:[^;]*/-kakaotalk-theme-id: 'com.jiwoong.bw.cat.theme'/g" \
+            "$CSS"
+
+          sed -i \
+            "s/-kakaotalk-author-name:[^;]*/-kakaotalk-author-name: 'UO'/g" \
+            "$CSS"
+
+      - name: Build ktheme
+        shell: bash
+        run: |
+          set -e
+
+          rm -f JIWOONG_BW.ktheme
+
+          cd theme
+          zip -q -r ../JIWOONG_BW.ktheme .
+          cd ..
+
+          unzip -t JIWOONG_BW.ktheme
+          ls -lh JIWOONG_BW.ktheme
+
+      - name: Commit theme
+        shell: bash
+        run: |
+          set -e
+
           git config user.name "github-actions[bot]"
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
 
-          git add theme-file-list.txt
+          git add JIWOONG_BW.ktheme
 
           if git diff --cached --quiet; then
             echo "No changes."
           else
-            git commit -m "Add KakaoTalk theme file list"
+            git commit -m "Build JIWOONG cat bubble theme"
             git push
           fi
