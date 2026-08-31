@@ -1,0 +1,130 @@
+name: Build JIWOONG KakaoTalk Theme
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Find base theme and photo
+        shell: bash
+        run: |
+          set -e
+
+          THEME="$(find . -maxdepth 1 -type f -iname 'mangdaeng.ktheme' | head -1)"
+
+          PHOTO="$(find . -maxdepth 1 -type f \
+            \( -iname '*.jpg' -o -iname '*.jpeg' -o -iname '*.png' -o -iname '*.heic' \) \
+            | head -1)"
+
+          if [ -z "$THEME" ]; then
+            echo "找不到 mangdaeng.ktheme"
+            exit 1
+          fi
+
+          if [ -z "$PHOTO" ]; then
+            echo "找不到地雄照片"
+            exit 1
+          fi
+
+          echo "THEME=$THEME" >> "$GITHUB_ENV"
+          echo "PHOTO=$PHOTO" >> "$GITHUB_ENV"
+
+          echo "Theme: $THEME"
+          echo "Photo: $PHOTO"
+
+      - name: Install image tools
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y imagemagick
+
+      - name: Extract original theme
+        shell: bash
+        run: |
+          set -e
+          rm -rf theme
+          mkdir theme
+          unzip -q "$THEME" -d theme
+
+          echo "Theme contents:"
+          find theme -maxdepth 2 -type f
+
+      - name: Create Jiwoong head image
+        shell: bash
+        run: |
+          set -e
+
+          mkdir -p theme/Images
+
+          magick "$PHOTO" \
+            -auto-orient \
+            -gravity center \
+            -crop "70%x58%+0-12%" +repage \
+            -resize "370x310>" \
+            theme/Images/jiwoong_head.png
+
+      - name: Change theme identity
+        shell: bash
+        run: |
+          set -e
+
+          CSS="theme/KakaoTalkTheme.css"
+
+          if [ ! -f "$CSS" ]; then
+            echo "找不到 KakaoTalkTheme.css"
+            exit 1
+          fi
+
+          sed -i \
+            "s/-kakaotalk-theme-name:[^;]*/-kakaotalk-theme-name: 'JIWOONG BW'/g" \
+            "$CSS"
+
+          sed -i \
+            "s/-kakaotalk-theme-id:[^;]*/-kakaotalk-theme-id: 'com.jiwoong.bw.theme'/g" \
+            "$CSS"
+
+          sed -i \
+            "s/-kakaotalk-author-name:[^;]*/-kakaotalk-author-name: 'UO'/g" \
+            "$CSS"
+
+      - name: Repack ktheme
+        shell: bash
+        run: |
+          set -e
+
+          cd theme
+
+          zip -q -r ../JIWOONG_BW.ktheme . \
+            -x "*.DS_Store"
+
+          cd ..
+
+          unzip -t JIWOONG_BW.ktheme
+
+          echo "Generated:"
+          ls -lh JIWOONG_BW.ktheme
+
+      - name: Commit generated theme
+        shell: bash
+        run: |
+          set -e
+
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+
+          git add JIWOONG_BW.ktheme
+
+          if git diff --cached --quiet; then
+            echo "No changes"
+          else
+            git commit -m "Build JIWOONG BW KakaoTalk theme"
+            git push
+          fi
