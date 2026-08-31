@@ -1,4 +1,4 @@
-name: Build JIWOONG BW FINAL
+name: Build JIWOONG BW V3
 
 on:
   workflow_dispatch:
@@ -14,832 +14,859 @@ jobs:
       - name: Checkout
         uses: actions/checkout@v4
 
-      - name: Install tools
-        shell: bash
+      - name: Install
         run: |
           sudo apt-get update
           sudo apt-get install -y unzip zip
-          python3 -m pip install --upgrade pip
-          python3 -m pip install pillow numpy
+          python3 -m pip install pillow rembg onnxruntime
 
-          # 去背失敗也不終止，會改用圓形照片
-          python3 -m pip install rembg onnxruntime || true
-
-      - name: Extract original theme
-        shell: bash
+      - name: Extract base theme
         run: |
-          set -e
           rm -rf theme
           mkdir theme
           unzip -q mangdaeng.ktheme -d theme
-          test -f theme/KakaoTalkTheme.css
-          test -d theme/Images
 
-      - name: Build full JIWOONG design
-        shell: bash
+      - name: Generate JIWOONG V3
         run: |
-          set -e
-
           python3 <<'PY'
-          from PIL import Image, ImageDraw, ImageOps, ImageFilter
-          import os
-          import glob
-          import math
+          from PIL import Image, ImageDraw, ImageFilter
+          from rembg import remove
+          import os, glob, math
 
-          ROOT = "theme"
-          IMG = os.path.join(ROOT, "Images")
+          DIR = "theme/Images"
 
-          # =========================================================
-          # 基本工具
-          # =========================================================
+          BLACK = (18,18,18,255)
+          WHITE = (255,255,255,255)
+          CREAM = (252,251,248,255)
+          GRAY = (95,95,95,255)
+          BLUE = (112,183,230,255)
 
-          def open_rgba(path):
-              return Image.open(path).convert("RGBA")
+          # =====================================================
+          # BASIC
+          # =====================================================
 
-          def save_png(im, path):
-              im.save(path, "PNG", optimize=True)
+          def open_rgba(p):
+              return Image.open(p).convert("RGBA")
 
-          def density_from_name(path):
+          def save(im,p):
+              im.save(p,"PNG",optimize=True)
+
+          def scale(path):
               if "@3x" in path:
                   return 3
               if "@2x" in path:
                   return 2
               return 3
 
-          def fit_contain(im, size):
-              im = im.copy()
-              im.thumbnail(size, Image.Resampling.LANCZOS)
-              return im
+          # =====================================================
+          # HAND DRAWN DECORATIONS
+          # =====================================================
 
-          # =========================================================
-          # 地雄頭像
-          # =========================================================
-
-          photo_candidates = [
-              "IMG_5895.png",
-              "IMG_5895.jpg",
-              "IMG_5895.jpeg",
-          ]
-
-          photo_path = None
-
-          for p in photo_candidates:
-              if os.path.exists(p):
-                  photo_path = p
-                  break
-
-          if photo_path is None:
-              candidates = []
-              candidates += glob.glob("*.png")
-              candidates += glob.glob("*.jpg")
-              candidates += glob.glob("*.jpeg")
-
-              candidates = [
-                  p for p in candidates
-                  if not p.startswith("JIWOONG_")
-              ]
-
-              if candidates:
-                  photo_path = candidates[0]
-
-          head = None
-
-          if photo_path:
-              source = open_rgba(photo_path)
-              w, h = source.size
-
-              # 原照片中央人物
-              left = int(w * 0.27)
-              right = int(w * 0.73)
-              top = int(h * 0.02)
-              bottom = int(h * 0.72)
-
-              crop = source.crop(
-                  (left, top, right, bottom)
-              )
-
-              # AI 去背
-              try:
-                  from rembg import remove
-
-                  result = remove(crop)
-
-                  if not isinstance(result, Image.Image):
-                      result = Image.open(result)
-
-                  result = result.convert("RGBA")
-
-                  alpha = result.getchannel("A")
-                  bbox = alpha.getbbox()
-
-                  if bbox:
-                      result = result.crop(bbox)
-                      head = result
-
-              except Exception as e:
-                  print(
-                      "rembg unavailable, use fallback:",
-                      e
-                  )
-
-              # 去背失敗：圓形人物照
-              if head is None:
-                  cw, ch = crop.size
-                  side = min(cw, ch)
-
-                  x = (cw - side) // 2
-                  y = max(0, int(ch * 0.02))
-
-                  portrait = crop.crop(
-                      (
-                          x,
-                          y,
-                          x + side,
-                          min(ch, y + side)
-                      )
-                  )
-
-                  side = min(portrait.size)
-
-                  portrait = ImageOps.fit(
-                      portrait,
-                      (side, side),
-                      method=Image.Resampling.LANCZOS
-                  )
-
-                  mask = Image.new(
-                      "L",
-                      (side, side),
-                      0
-                  )
-
-                  md = ImageDraw.Draw(mask)
-
-                  md.ellipse(
-                      (
-                          2,
-                          2,
-                          side - 3,
-                          side - 3
-                      ),
-                      fill=255
-                  )
-
-                  result = Image.new(
-                      "RGBA",
-                      (side, side),
-                      (0, 0, 0, 0)
-                  )
-
-                  result.paste(
-                      portrait,
-                      (0, 0),
-                      mask
-                  )
-
-                  head = result
-
-          # =========================================================
-          # 手繪元素
-          # =========================================================
-
-          def draw_heart(draw, cx, cy, s, color, width):
-              pts = []
+          def heart(d,x,y,s,c=BLACK,w=3):
+              pts=[]
 
               for i in range(101):
-                  t = math.pi * 2 * i / 100
-
-                  x = 16 * math.sin(t) ** 3
-
-                  y = (
-                      13 * math.cos(t)
-                      - 5 * math.cos(2 * t)
-                      - 2 * math.cos(3 * t)
-                      - math.cos(4 * t)
+                  t=math.pi*2*i/100
+                  xx=16*math.sin(t)**3
+                  yy=(
+                      13*math.cos(t)
+                      -5*math.cos(2*t)
+                      -2*math.cos(3*t)
+                      -math.cos(4*t)
                   )
 
                   pts.append(
                       (
-                          cx + x * s / 32,
-                          cy - y * s / 32
+                          x+xx*s/32,
+                          y-yy*s/32
                       )
                   )
 
-              draw.line(
+              d.line(
                   pts,
-                  fill=color,
-                  width=width,
+                  fill=c,
+                  width=w,
                   joint="curve"
               )
 
-          def draw_clover(draw, cx, cy, s, color, width):
-              r = s * 0.18
+          def sparkle(d,x,y,s,c=BLACK,w=3):
 
-              for dx, dy in [
-                  (-r, -r),
-                  (r, -r),
-                  (-r, r),
-                  (r, r),
+              d.line(
+                  (x,y-s,x,y+s),
+                  fill=c,
+                  width=w
+              )
+
+              d.line(
+                  (
+                      x-s*.38,
+                      y,
+                      x+s*.38,
+                      y
+                  ),
+                  fill=c,
+                  width=w
+              )
+
+          def clover(d,x,y,s,c=BLACK,w=3):
+
+              r=s*.19
+
+              for dx,dy in [
+                  (-r,-r),
+                  (r,-r),
+                  (-r,r),
+                  (r,r)
               ]:
-                  draw.ellipse(
+
+                  d.ellipse(
                       (
-                          cx + dx - r,
-                          cy + dy - r,
-                          cx + dx + r,
-                          cy + dy + r
+                          x+dx-r,
+                          y+dy-r,
+                          x+dx+r,
+                          y+dy+r
                       ),
-                      outline=color,
-                      width=width
+                      outline=c,
+                      width=w
                   )
 
-              draw.line(
+              d.line(
                   (
-                      cx,
-                      cy + r,
-                      cx + s * 0.14,
-                      cy + s * 0.48
+                      x,
+                      y+r*1.7,
+                      x+s*.12,
+                      y+s*.48
                   ),
-                  fill=color,
-                  width=width
+                  fill=c,
+                  width=w
               )
 
-          def draw_butterfly(draw, cx, cy, s, color, width):
-              r = s * 0.22
+          def bow(d,x,y,s,c=BLACK,w=3):
 
-              draw.ellipse(
+              d.ellipse(
                   (
-                      cx - r * 2.0,
-                      cy - r * 1.4,
-                      cx - r * 0.25,
-                      cy + r * 0.1
+                      x-s*.46,
+                      y-s*.25,
+                      x-s*.03,
+                      y+s*.20
                   ),
-                  outline=color,
-                  width=width
+                  outline=c,
+                  width=w
               )
 
-              draw.ellipse(
+              d.ellipse(
                   (
-                      cx + r * 0.25,
-                      cy - r * 1.4,
-                      cx + r * 2.0,
-                      cy + r * 0.1
+                      x+s*.03,
+                      y-s*.25,
+                      x+s*.46,
+                      y+s*.20
                   ),
-                  outline=color,
-                  width=width
+                  outline=c,
+                  width=w
               )
 
-              draw.ellipse(
+              d.ellipse(
                   (
-                      cx - r * 1.6,
-                      cy,
-                      cx - r * 0.15,
-                      cy + r * 1.5
+                      x-s*.08,
+                      y-s*.08,
+                      x+s*.08,
+                      y+s*.08
                   ),
-                  outline=color,
-                  width=width
+                  fill=c
               )
 
-              draw.ellipse(
+          def paw(d,x,y,s,c=BLACK):
+
+              d.ellipse(
                   (
-                      cx + r * 0.15,
-                      cy,
-                      cx + r * 1.6,
-                      cy + r * 1.5
+                      x-s*.22,
+                      y,
+                      x+s*.22,
+                      y+s*.28
                   ),
-                  outline=color,
-                  width=width
+                  fill=c
               )
 
-              draw.line(
-                  (
-                      cx,
-                      cy - r,
-                      cx,
-                      cy + r * 1.3
-                  ),
-                  fill=color,
-                  width=width
-              )
+              for dx,dy in [
+                  (-.28,-.18),
+                  (-.09,-.30),
+                  (.12,-.30),
+                  (.30,-.15)
+              ]:
 
-          def draw_cat(
-              draw,
-              cx,
-              cy,
-              s,
-              color,
-              width,
-              filled=False
-          ):
-              r = s * 0.32
-
-              if filled:
-                  draw.ellipse(
+                  d.ellipse(
                       (
-                          cx-r,
-                          cy-r,
-                          cx+r,
-                          cy+r
+                          x+s*dx-s*.08,
+                          y+s*dy-s*.08,
+                          x+s*dx+s*.08,
+                          y+s*dy+s*.08
                       ),
-                      fill=color
+                      fill=c
                   )
 
-                  draw.polygon(
-                      [
-                          (
-                              cx-r*0.8,
-                              cy-r*0.55
-                          ),
-                          (
-                              cx-r*0.95,
-                              cy-r*1.35
-                          ),
-                          (
-                              cx-r*0.15,
-                              cy-r*0.8
-                          )
-                      ],
-                      fill=color
-                  )
+          # =====================================================
+          # BUTTERFLY
+          # =====================================================
 
-                  draw.polygon(
-                      [
-                          (
-                              cx+r*0.8,
-                              cy-r*0.55
-                          ),
-                          (
-                              cx+r*0.95,
-                              cy-r*1.35
-                          ),
-                          (
-                              cx+r*0.15,
-                              cy-r*0.8
-                          )
-                      ],
-                      fill=color
-                  )
+          def butterfly(d,x,y,s,w=3):
 
-                  return
+              edge=BLACK
 
-              draw.ellipse(
+              # left top
+              d.ellipse(
                   (
-                      cx-r,
-                      cy-r,
-                      cx+r,
-                      cy+r
+                      x-s*.48,
+                      y-s*.38,
+                      x-s*.03,
+                      y+s*.02
                   ),
-                  outline=color,
-                  width=width
+                  fill=(150,210,242,255),
+                  outline=edge,
+                  width=w
               )
 
-              draw.line(
+              # right top
+              d.ellipse(
                   (
-                      cx-r*0.72,
-                      cy-r*0.58,
-                      cx-r*0.9,
-                      cy-r*1.22,
-                      cx-r*0.1,
-                      cy-r*0.78
+                      x+s*.03,
+                      y-s*.38,
+                      x+s*.48,
+                      y+s*.02
                   ),
-                  fill=color,
-                  width=width
+                  fill=(150,210,242,255),
+                  outline=edge,
+                  width=w
               )
 
-              draw.line(
+              # lower wings
+              d.ellipse(
                   (
-                      cx+r*0.72,
-                      cy-r*0.58,
-                      cx+r*0.9,
-                      cy-r*1.22,
-                      cx+r*0.1,
-                      cy-r*0.78
+                      x-s*.38,
+                      y,
+                      x-s*.02,
+                      y+s*.34
                   ),
-                  fill=color,
-                  width=width
+                  fill=(105,175,225,255),
+                  outline=edge,
+                  width=w
               )
 
-              draw.ellipse(
+              d.ellipse(
                   (
-                      cx-r*0.42,
-                      cy-r*0.1,
-                      cx-r*0.28,
-                      cy+r*0.04
+                      x+s*.02,
+                      y,
+                      x+s*.38,
+                      y+s*.34
                   ),
-                  fill=color
+                  fill=(105,175,225,255),
+                  outline=edge,
+                  width=w
               )
 
-              draw.ellipse(
+              d.line(
                   (
-                      cx+r*0.28,
-                      cy-r*0.1,
-                      cx+r*0.42,
-                      cy+r*0.04
+                      x,
+                      y-s*.18,
+                      x,
+                      y+s*.25
                   ),
-                  fill=color
+                  fill=edge,
+                  width=w
               )
 
-          def draw_penguin(
-              draw,
-              cx,
-              cy,
-              s,
-              color,
-              width
-          ):
-              rw = s * 0.28
-              rh = s * 0.38
+          # =====================================================
+          # BLACK CAT
+          # =====================================================
 
-              draw.ellipse(
-                  (
-                      cx-rw,
-                      cy-rh,
-                      cx+rw,
-                      cy+rh
-                  ),
-                  outline=color,
-                  width=width
-              )
+          def blackcat(d,x,y,s):
 
-              draw.ellipse(
-                  (
-                      cx-rw*0.55,
-                      cy-rh*0.15,
-                      cx+rw*0.55,
-                      cy+rh*0.7
-                  ),
-                  outline=color,
-                  width=width
-              )
+              r=s*.32
 
-              draw.polygon(
+              # ears
+              d.polygon(
                   [
-                      (
-                          cx,
-                          cy
-                      ),
-                      (
-                          cx+s*0.08,
-                          cy+s*0.05
-                      ),
-                      (
-                          cx,
-                          cy+s*0.1
-                      )
+                      (x-r*.82,y-r*.55),
+                      (x-r*.92,y-r*1.25),
+                      (x-r*.18,y-r*.82)
                   ],
-                  outline=color
+                  fill=BLACK
               )
 
-          def draw_tiger(
-              draw,
-              cx,
-              cy,
-              s,
-              color,
-              width
-          ):
-              r = s * 0.31
+              d.polygon(
+                  [
+                      (x+r*.82,y-r*.55),
+                      (x+r*.92,y-r*1.25),
+                      (x+r*.18,y-r*.82)
+                  ],
+                  fill=BLACK
+              )
 
-              draw.ellipse(
+              d.ellipse(
                   (
-                      cx-r,
-                      cy-r,
-                      cx+r,
-                      cy+r
+                      x-r,
+                      y-r,
+                      x+r,
+                      y+r
                   ),
-                  outline=color,
-                  width=width
+                  fill=BLACK
               )
 
-              draw.arc(
-                  (
-                      cx-r*1.15,
-                      cy-r*1.15,
-                      cx-r*0.25,
-                      cy-r*0.25
-                  ),
-                  180,
-                  350,
-                  fill=color,
-                  width=width
-              )
+              eye=max(2,int(s*.055))
 
-              draw.arc(
-                  (
-                      cx+r*0.25,
-                      cy-r*1.15,
-                      cx+r*1.15,
-                      cy-r*0.25
-                  ),
-                  190,
-                  360,
-                  fill=color,
-                  width=width
-              )
+              for ex in (
+                  x-r*.36,
+                  x+r*.36
+              ):
 
-              for dx in (-0.25, 0, 0.25):
-                  draw.line(
+                  d.ellipse(
                       (
-                          cx + r*dx,
-                          cy-r*0.75,
-                          cx + r*dx*0.7,
-                          cy-r*0.25
+                          ex-eye,
+                          y-r*.05-eye,
+                          ex+eye,
+                          y-r*.05+eye
                       ),
-                      fill=color,
-                      width=width
+                      fill=(230,190,40,255)
                   )
 
-              draw.ellipse(
+                  d.ellipse(
+                      (
+                          ex-eye*.20,
+                          y-r*.05-eye*.75,
+                          ex+eye*.20,
+                          y-r*.05+eye*.75
+                      ),
+                      fill=BLACK
+                  )
+
+          # =====================================================
+          # PENGUIN
+          # =====================================================
+
+          def penguin(d,x,y,s):
+
+              rw=s*.31
+              rh=s*.39
+
+              d.ellipse(
                   (
-                      cx-r*0.38,
-                      cy-r*0.05,
-                      cx-r*0.24,
-                      cy+r*0.08
+                      x-rw,
+                      y-rh,
+                      x+rw,
+                      y+rh
                   ),
-                  fill=color
+                  fill=BLACK
               )
 
-              draw.ellipse(
+              d.ellipse(
                   (
-                      cx+r*0.24,
-                      cy-r*0.05,
-                      cx+r*0.38,
-                      cy+r*0.08
+                      x-rw*.66,
+                      y-rh*.42,
+                      x+rw*.66,
+                      y+rh*.74
                   ),
-                  fill=color
+                  fill=WHITE
               )
 
-          # =========================================================
-          # 黑白背景
-          # =========================================================
+              # eyes
+              er=max(2,int(s*.035))
 
-          def make_background(path, chat=False):
-              old = open_rgba(path)
-              w, h = old.size
+              d.ellipse(
+                  (
+                      x-rw*.30-er,
+                      y-rh*.30-er,
+                      x-rw*.30+er,
+                      y-rh*.30+er
+                  ),
+                  fill=BLACK
+              )
 
-              bg = Image.new(
+              d.ellipse(
+                  (
+                      x+rw*.30-er,
+                      y-rh*.30-er,
+                      x+rw*.30+er,
+                      y-rh*.30+er
+                  ),
+                  fill=BLACK
+              )
+
+              # beak
+              d.polygon(
+                  [
+                      (x-s*.10,y-rh*.08),
+                      (x+s*.10,y-rh*.08),
+                      (x,y+s*.07)
+                  ],
+                  fill=(244,174,38,255),
+                  outline=BLACK
+              )
+
+          # =====================================================
+          # TIGER
+          # =====================================================
+
+          def tiger(d,x,y,s):
+
+              r=s*.32
+
+              orange=(241,151,39,255)
+
+              d.ellipse(
+                  (
+                      x-r,
+                      y-r,
+                      x+r,
+                      y+r
+                  ),
+                  fill=orange,
+                  outline=BLACK,
+                  width=max(2,int(s*.035))
+              )
+
+              # ears
+              d.ellipse(
+                  (
+                      x-r*1.02,
+                      y-r*1.05,
+                      x-r*.35,
+                      y-r*.35
+                  ),
+                  fill=orange,
+                  outline=BLACK,
+                  width=max(2,int(s*.03))
+              )
+
+              d.ellipse(
+                  (
+                      x+r*.35,
+                      y-r*1.05,
+                      x+r*1.02,
+                      y-r*.35
+                  ),
+                  fill=orange,
+                  outline=BLACK,
+                  width=max(2,int(s*.03))
+              )
+
+              # muzzle
+              d.ellipse(
+                  (
+                      x-r*.50,
+                      y+r*.05,
+                      x+r*.50,
+                      y+r*.65
+                  ),
+                  fill=WHITE
+              )
+
+              # stripes
+              lw=max(2,int(s*.045))
+
+              for xx in (-.40,0,.40):
+
+                  d.line(
+                      (
+                          x+r*xx,
+                          y-r*.86,
+                          x+r*xx*.65,
+                          y-r*.32
+                      ),
+                      fill=BLACK,
+                      width=lw
+                  )
+
+              # eyes
+              eye=max(2,int(s*.035))
+
+              for ex in (
+                  x-r*.36,
+                  x+r*.36
+              ):
+
+                  d.ellipse(
+                      (
+                          ex-eye,
+                          y-r*.08-eye,
+                          ex+eye,
+                          y-r*.08+eye
+                      ),
+                      fill=BLACK
+                  )
+
+          # =====================================================
+          # JIWOONG HEAD
+          # =====================================================
+
+          photo=None
+
+          for p in [
+              "IMG_5895.png",
+              "IMG_5895.jpeg",
+              "IMG_5895.jpg"
+          ]:
+              if os.path.exists(p):
+                  photo=p
+                  break
+
+          HEAD=None
+
+          if photo:
+
+              print("Creating Jiwoong sticker...")
+
+              src=open_rgba(photo)
+
+              W,H=src.size
+
+              # central person
+              crop=src.crop(
+                  (
+                      int(W*.25),
+                      int(H*.02),
+                      int(W*.67),
+                      int(H*.64)
+                  )
+              )
+
+              try:
+
+                  head=remove(crop)
+
+                  if not isinstance(head,Image.Image):
+                      from io import BytesIO
+                      head=Image.open(
+                          BytesIO(head)
+                      )
+
+                  head=head.convert("RGBA")
+
+                  alpha=head.getchannel("A")
+
+                  alpha=alpha.point(
+                      lambda a:
+                      0 if a<35 else a
+                  )
+
+                  head.putalpha(alpha)
+
+                  bbox=alpha.getbbox()
+
+                  if bbox:
+                      head=head.crop(bbox)
+
+                  # cut body
+                  hw,hh=head.size
+
+                  head=head.crop(
+                      (
+                          0,
+                          0,
+                          hw,
+                          int(hh*.68)
+                      )
+                  )
+
+                  bbox=head.getchannel("A").getbbox()
+
+                  if bbox:
+                      head=head.crop(bbox)
+
+                  HEAD=head
+
+                  save(
+                      HEAD,
+                      "jiwoong_head_v3.png"
+                  )
+
+              except Exception as e:
+                  print(e)
+
+          # =====================================================
+          # WHITE OUTLINE STICKER
+          # =====================================================
+
+          def sticker(base,asset,x,y,border):
+
+              alpha=asset.getchannel("A")
+
+              k=max(3,border*2+1)
+
+              if k%2==0:
+                  k+=1
+
+              spread=alpha.filter(
+                  ImageFilter.MaxFilter(k)
+              )
+
+              outline=Image.new(
                   "RGBA",
-                  (w, h),
-                  (255, 255, 255, 255)
+                  asset.size,
+                  WHITE
               )
 
-              d = ImageDraw.Draw(bg)
+              outline.putalpha(spread)
 
-              line = (26, 26, 26, 70)
-              soft = (26, 26, 26, 38)
-
-              unit = max(
-                  10,
-                  w // 35
+              base.alpha_composite(
+                  outline,
+                  (x,y)
               )
 
-              lw = max(
-                  2,
-                  w // 520
+              base.alpha_composite(
+                  asset,
+                  (x,y)
               )
+
+          # =====================================================
+          # BACKGROUNDS
+          # =====================================================
+
+          def make_bg(path,chat=False):
+
+              old=open_rgba(path)
+
+              w,h=old.size
+
+              im=Image.new(
+                  "RGBA",
+                  (w,h),
+                  CREAM
+              )
+
+              d=ImageDraw.Draw(im)
+
+              lw=max(2,w//380)
+
+              S=w/12
 
               if chat:
-                  draw_heart(
-                      d,
-                      int(w*0.13),
-                      int(h*0.13),
-                      unit*2.0,
-                      soft,
-                      lw
+
+                  heart(
+                      d,w*.08,h*.12,S*.48,
+                      BLACK,lw
                   )
 
-                  draw_clover(
-                      d,
-                      int(w*0.85),
-                      int(h*0.22),
-                      unit*2.1,
-                      soft,
-                      lw
+                  sparkle(
+                      d,w*.84,h*.11,S*.32,
+                      BLACK,lw
                   )
 
-                  draw_butterfly(
-                      d,
-                      int(w*0.18),
-                      int(h*0.72),
-                      unit*2.1,
-                      soft,
-                      lw
+                  clover(
+                      d,w*.12,h*.27,S*.48,
+                      BLACK,lw
                   )
 
-                  draw_cat(
-                      d,
-                      int(w*0.84),
-                      int(h*0.82),
-                      unit*2.3,
-                      soft,
-                      lw
+                  heart(
+                      d,w*.89,h*.35,S*.38,
+                      BLACK,lw
                   )
 
-                  # 修正版：這裡必須使用 d.line
-                  d.line(
-                      (
-                          int(w*0.10),
-                          int(h*0.48),
-                          int(w*0.20),
-                          int(h*0.46)
-                      ),
-                      fill=soft,
-                      width=lw
+                  sparkle(
+                      d,w*.12,h*.51,S*.28,
+                      BLACK,lw
                   )
 
-                  d.line(
-                      (
-                          int(w*0.80),
-                          int(h*0.57),
-                          int(w*0.90),
-                          int(h*0.55)
-                      ),
-                      fill=soft,
-                      width=lw
+                  clover(
+                      d,w*.87,h*.61,S*.50,
+                      BLACK,lw
+                  )
+
+                  heart(
+                      d,w*.10,h*.79,S*.42,
+                      BLACK,lw
+                  )
+
+                  butterfly(
+                      d,w*.85,h*.83,S*.60,lw
+                  )
+
+                  bow(
+                      d,w*.16,h*.92,S*.55,
+                      BLACK,lw
                   )
 
               else:
-                  draw_penguin(
-                      d,
-                      int(w*0.14),
-                      int(h*0.18),
-                      unit*2.8,
-                      line,
-                      lw
+
+                  # closer to promotional mockup
+                  penguin(
+                      d,w*.12,h*.18,S*1.30
                   )
 
-                  draw_tiger(
-                      d,
-                      int(w*0.86),
-                      int(h*0.18),
-                      unit*2.8,
-                      line,
-                      lw
+                  tiger(
+                      d,w*.13,h*.32,S*1.18
                   )
 
-                  draw_cat(
-                      d,
-                      int(w*0.15),
-                      int(h*0.78),
-                      unit*2.7,
-                      line,
-                      lw,
-                      filled=True
+                  blackcat(
+                      d,w*.12,h*.45,S*1.05
                   )
 
-                  draw_butterfly(
-                      d,
-                      int(w*0.85),
-                      int(h*0.78),
-                      unit*2.7,
-                      line,
-                      lw
+                  butterfly(
+                      d,w*.80,h*.23,S*.95,lw
                   )
 
-                  draw_clover(
-                      d,
-                      int(w*0.12),
-                      int(h*0.48),
-                      unit*1.8,
-                      soft,
-                      lw
+                  butterfly(
+                      d,w*.79,h*.54,S*.92,lw
                   )
 
-                  draw_heart(
-                      d,
-                      int(w*0.88),
-                      int(h*0.47),
-                      unit*1.8,
-                      soft,
-                      lw
+                  heart(
+                      d,w*.63,h*.15,S*.65,
+                      BLACK,lw
                   )
 
-                  draw_heart(
-                      d,
-                      int(w*0.50),
-                      int(h*0.20),
-                      unit*1.3,
-                      soft,
-                      lw
+                  clover(
+                      d,w*.18,h*.63,S*.60,
+                      BLACK,lw
                   )
 
-                  draw_clover(
-                      d,
-                      int(w*0.50),
-                      int(h*0.72),
-                      unit*1.3,
-                      soft,
-                      lw
+                  bow(
+                      d,w*.28,h*.78,S*.65,
+                      BLACK,lw
                   )
 
-              save_png(bg, path)
+                  sparkle(
+                      d,w*.85,h*.75,S*.35,
+                      BLACK,lw
+                  )
 
-          chat_bg = os.path.join(
-              IMG,
+                  paw(
+                      d,w*.18,h*.90,S*.42,
+                      BLACK
+                  )
+
+                  if HEAD:
+
+                      hh=HEAD.copy()
+
+                      hh.thumbnail(
+                          (
+                              int(w*.64),
+                              int(h*.34)
+                          ),
+                          Image.Resampling.LANCZOS
+                      )
+
+                      sticker(
+                          im,
+                          hh,
+                          int(w*.18),
+                          int(h*.64),
+                          max(4,w//160)
+                      )
+
+              save(im,path)
+
+          p=os.path.join(
+              DIR,
               "chatroomBgImage@3x.png"
           )
 
-          main_bg = os.path.join(
-              IMG,
+          if os.path.exists(p):
+              make_bg(p,True)
+
+          p=os.path.join(
+              DIR,
               "mainBgImage@3x.png"
           )
 
-          if os.path.exists(chat_bg):
-              make_background(
-                  chat_bg,
-                  chat=True
-              )
+          if os.path.exists(p):
+              make_bg(p,False)
 
-          if os.path.exists(main_bg):
-              make_background(
-                  main_bg,
-                  chat=False
-              )
+          # =====================================================
+          # CAT EAR CHAT BUBBLES
+          # =====================================================
 
-          # =========================================================
-          # 貓耳聊天氣泡
-          # =========================================================
+          def bubble(path):
 
-          bubble_files = sorted(
-              glob.glob(
-                  os.path.join(
-                      IMG,
-                      "chatroomBubble*.png"
-                  )
-              )
-          )
+              original=open_rgba(path)
 
-          def make_bubble(path):
-              old = open_rgba(path)
+              w,h=original.size
 
-              w, h = old.size
+              name=os.path.basename(path)
 
-              name = os.path.basename(path)
+              send="Send" in name
+              first="01" in name
+              selected="Selected" in name
 
-              send = "Send" in name
-              selected = "Selected" in name
-              first = "01" in name
+              den=scale(path)
 
-              den = density_from_name(path)
-
-              im = Image.new(
+              im=Image.new(
                   "RGBA",
-                  (w, h),
-                  (0, 0, 0, 0)
+                  (w,h),
+                  (0,0,0,0)
               )
 
-              d = ImageDraw.Draw(im)
+              d=ImageDraw.Draw(im)
 
               if send:
-                  fill = (
-                      (20,20,20,255)
-                      if not selected
-                      else (48,48,48,255)
+                  fill=(
+                      (45,45,45,255)
+                      if selected
+                      else BLACK
                   )
-
-                  stroke = (
-                      20,
-                      20,
-                      20,
-                      255
-                  )
+                  edge=fill
 
               else:
-                  fill = (
-                      (255,255,255,255)
-                      if not selected
-                      else (238,238,238,255)
+                  fill=(
+                      (244,244,244,255)
+                      if selected
+                      else WHITE
                   )
+                  edge=BLACK
 
-                  stroke = (
-                      20,
-                      20,
-                      20,
-                      255
-                  )
-
-              sw = max(
+              stroke=max(
                   2,
-                  den
+                  int(1.5*den)
               )
 
-              margin = 4 * den
-
-              head_space = (
-                  int(h * 0.32)
+              # Larger decorative fixed region for 01
+              top=int(
+                  h*.40
                   if first
-                  else 0
+                  else h*.20
               )
 
-              top = margin + head_space
-              bottom = h - margin
-              left = margin
-              right = w - margin
+              left=max(2,den)
+              right=w-max(2,den)
+              bottom=h-max(2,den)
 
-              radius = max(
-                  10,
-                  int(min(w, h) * 0.17)
+              radius=int(
+                  min(w,h)*.17
               )
 
+              # CAT EARS FIRST
+              earH=int(
+                  h*.24
+                  if first
+                  else h*.17
+              )
+
+              earW=int(w*.19)
+
+              lx=left+radius*.55
+              rx=right-radius*.55
+
+              leftEar=[
+                  (lx,top+3),
+                  (lx+earW*.46,top-earH),
+                  (lx+earW,top+3)
+              ]
+
+              rightEar=[
+                  (rx-earW,top+3),
+                  (rx-earW*.46,top-earH),
+                  (rx,top+3)
+              ]
+
+              d.polygon(
+                  leftEar,
+                  fill=fill
+              )
+
+              d.polygon(
+                  rightEar,
+                  fill=fill
+              )
+
+              # BODY
               d.rounded_rectangle(
                   (
                       left,
@@ -849,759 +876,355 @@ jobs:
                   ),
                   radius=radius,
                   fill=fill,
-                  outline=stroke,
-                  width=sw
+                  outline=edge,
+                  width=stroke
               )
 
-              # 貓耳
-              ear_w = max(
-                  12,
-                  int(w * 0.16)
-              )
-
-              ear_h = max(
-                  10,
-                  int(h * 0.10)
-              )
-
-              if send:
-                  ex = (
-                      right
-                      - radius
-                      - ear_w
-                  )
-              else:
-                  ex = (
-                      left
-                      + radius
-                  )
-
-              pts = [
-                  (
-                      ex,
-                      top + sw
-                  ),
-                  (
-                      ex + ear_w * 0.50,
-                      top - ear_h
-                  ),
-                  (
-                      ex + ear_w,
-                      top + sw
-                  )
-              ]
-
-              d.polygon(
-                  pts,
-                  fill=fill
-              )
-
+              # EAR OUTLINE
               d.line(
-                  pts,
-                  fill=stroke,
-                  width=sw,
+                  leftEar,
+                  fill=edge,
+                  width=stroke,
                   joint="curve"
               )
 
-              # 非第一段氣泡加入小愛心
-              if not first:
-                  heart_size = max(
-                      10,
-                      int(
-                          min(w, h)
-                          * 0.13
-                      )
-                  )
+              d.line(
+                  rightEar,
+                  fill=edge,
+                  width=stroke,
+                  joint="curve"
+              )
 
-                  hx = (
-                      left + radius
-                      if send
-                      else right - radius
-                  )
+              # Hide ear base line visually
+              d.line(
+                  (
+                      lx+stroke,
+                      top+stroke,
+                      lx+earW-stroke,
+                      top+stroke
+                  ),
+                  fill=fill,
+                  width=stroke+2
+              )
 
-                  hy = (
-                      top + radius
-                  )
+              d.line(
+                  (
+                      rx-earW+stroke,
+                      top+stroke,
+                      rx-stroke,
+                      top+stroke
+                  ),
+                  fill=fill,
+                  width=stroke+2
+              )
 
-                  hc = (
-                      (255,255,255,150)
-                      if send
-                      else (20,20,20,90)
-                  )
+              # Jiwoong sticker on first bubble
+              if first and HEAD:
 
-                  draw_heart(
-                      d,
-                      hx,
-                      hy,
-                      heart_size,
-                      hc,
-                      max(1, den-1)
-                  )
+                  head=HEAD.copy()
 
-              # 第一段氣泡：地雄探頭
-              if first and head is not None:
-                  target_w = int(
-                      w * 0.43
-                  )
-
-                  hh = fit_contain(
-                      head,
+                  # MUCH BIGGER than previous version
+                  head.thumbnail(
                       (
-                          target_w,
-                          int(h * 0.39)
-                      )
-                  )
-
-                  alpha = hh.getchannel(
-                      "A"
-                  )
-
-                  filter_size = max(
-                      3,
-                      den * 2 + 1
-                  )
-
-                  # MaxFilter 必須是奇數
-                  if filter_size % 2 == 0:
-                      filter_size += 1
-
-                  border = alpha.filter(
-                      ImageFilter.MaxFilter(
-                          filter_size
-                      )
-                  )
-
-                  outline = Image.new(
-                      "RGBA",
-                      hh.size,
-                      (255,255,255,0)
-                  )
-
-                  outline.putalpha(
-                      border
+                          int(w*.48),
+                          int(h*.44)
+                      ),
+                      Image.Resampling.LANCZOS
                   )
 
                   if send:
-                      px = (
-                          right
-                          - hh.width
-                          - int(w*0.03)
-                      )
+                      x=w-head.width
                   else:
-                      px = (
-                          left
-                          + int(w*0.03)
-                      )
+                      x=0
 
-                  py = max(
+                  y=max(
                       0,
-                      top
-                      - hh.height
-                      + den*2
+                      top-head.height+den
                   )
 
-                  im.alpha_composite(
-                      outline,
-                      (px, py)
+                  sticker(
+                      im,
+                      head,
+                      int(x),
+                      int(y),
+                      max(2,den)
+                  )
+
+              save(im,path)
+
+          for p in glob.glob(
+              DIR+"/chatroomBubble*.png"
+          ):
+              bubble(p)
+
+          # =====================================================
+          # TAB ICONS
+          # Friends = Penguin
+          # Chats = Tiger
+          # Open chat = Black cat
+          # Shopping = Butterfly
+          # More = Jiwoong
+          # =====================================================
+
+          def tab(path):
+
+              old=open_rgba(path)
+
+              w,h=old.size
+
+              name=os.path.basename(path)
+
+              im=Image.new(
+                  "RGBA",
+                  (w,h),
+                  (0,0,0,0)
+              )
+
+              d=ImageDraw.Draw(im)
+
+              s=min(w,h)*.92
+
+              if "Friends" in name:
+
+                  penguin(
+                      d,w/2,h/2,s
+                  )
+
+              elif "Chats" in name:
+
+                  tiger(
+                      d,w/2,h/2,s
+                  )
+
+              elif "Now" in name or "Call" in name:
+
+                  blackcat(
+                      d,w/2,h/2,s
+                  )
+
+              elif "Shopping" in name or "Piccoma" in name:
+
+                  butterfly(
+                      d,w/2,h/2,s,
+                      max(2,int(s*.035))
+                  )
+
+              elif "More" in name and HEAD:
+
+                  hh=HEAD.copy()
+
+                  hh.thumbnail(
+                      (
+                          int(w*.92),
+                          int(h*.92)
+                      ),
+                      Image.Resampling.LANCZOS
                   )
 
                   im.alpha_composite(
                       hh,
-                      (px, py)
-                  )
-
-              save_png(
-                  im,
-                  path
-              )
-
-          for p in bubble_files:
-              make_bubble(p)
-
-          # =========================================================
-          # Tab Bar 背景
-          # =========================================================
-
-          for path in glob.glob(
-              os.path.join(
-                  IMG,
-                  "maintabBgImage@*.png"
-              )
-          ):
-              old = open_rgba(path)
-              w, h = old.size
-
-              im = Image.new(
-                  "RGBA",
-                  (w, h),
-                  (255,255,255,255)
-              )
-
-              d = ImageDraw.Draw(im)
-
-              lw = max(
-                  1,
-                  h // 45
-              )
-
-              d.line(
-                  (
-                      0,
-                      1,
-                      w,
-                      1
-                  ),
-                  fill=(25,25,25,65),
-                  width=lw
-              )
-
-              save_png(
-                  im,
-                  path
-              )
-
-          # =========================================================
-          # Tab 圖示
-          # =========================================================
-
-          def make_tab_icon(path):
-              old = open_rgba(path)
-              w, h = old.size
-
-              selected = (
-                  "Selected"
-                  in path
-              )
-
-              im = Image.new(
-                  "RGBA",
-                  (w, h),
-                  (0,0,0,0)
-              )
-
-              d = ImageDraw.Draw(im)
-
-              cx = w / 2
-              cy = h / 2
-
-              s = min(w, h) * 0.82
-
-              c = (
-                  (15,15,15,255)
-                  if selected
-                  else (75,75,75,255)
-              )
-
-              lw = max(
-                  2,
-                  int(
-                      min(w, h)
-                      * 0.07
-                  )
-              )
-
-              name = os.path.basename(path)
-
-              if "Friends" in name:
-                  draw_cat(
-                      d,
-                      cx,
-                      cy + s*0.06,
-                      s,
-                      c,
-                      lw,
-                      filled=selected
-                  )
-
-              elif "Chats" in name:
-                  x1 = cx - s*0.38
-                  y1 = cy - s*0.26
-                  x2 = cx + s*0.38
-                  y2 = cy + s*0.22
-
-                  d.rounded_rectangle(
                       (
-                          x1,
-                          y1,
-                          x2,
-                          y2
-                      ),
-                      radius=int(s*0.12),
-                      outline=c,
-                      width=lw
-                  )
-
-                  d.line(
-                      (
-                          cx+s*0.08,
-                          y2,
-                          cx+s*0.24,
-                          y2+s*0.18,
-                          cx+s*0.22,
-                          y2
-                      ),
-                      fill=c,
-                      width=lw
-                  )
-
-                  draw_heart(
-                      d,
-                      cx,
-                      cy-s*0.02,
-                      s*0.25,
-                      c,
-                      max(1, lw-1)
-                  )
-
-              elif "Now" in name:
-                  draw_penguin(
-                      d,
-                      cx,
-                      cy,
-                      s,
-                      c,
-                      lw
-                  )
-
-              elif "Piccoma" in name:
-                  draw_tiger(
-                      d,
-                      cx,
-                      cy,
-                      s,
-                      c,
-                      lw
-                  )
-
-              elif "Call" in name:
-                  draw_butterfly(
-                      d,
-                      cx,
-                      cy,
-                      s,
-                      c,
-                      lw
-                  )
-
-              elif "Shopping" in name:
-                  x1 = cx-s*0.32
-                  y1 = cy-s*0.15
-                  x2 = cx+s*0.32
-                  y2 = cy+s*0.34
-
-                  d.rounded_rectangle(
-                      (
-                          x1,
-                          y1,
-                          x2,
-                          y2
-                      ),
-                      radius=int(s*0.08),
-                      outline=c,
-                      width=lw
-                  )
-
-                  d.arc(
-                      (
-                          cx-s*0.18,
-                          cy-s*0.34,
-                          cx+s*0.18,
-                          cy+s*0.02
-                      ),
-                      180,
-                      360,
-                      fill=c,
-                      width=lw
-                  )
-
-                  draw_heart(
-                      d,
-                      cx,
-                      cy+s*0.11,
-                      s*0.22,
-                      c,
-                      max(1, lw-1)
+                          (w-hh.width)//2,
+                          (h-hh.height)//2
+                      )
                   )
 
               else:
-                  draw_clover(
+
+                  heart(
                       d,
-                      cx,
-                      cy,
-                      s*0.78,
-                      c,
-                      lw
+                      w/2,
+                      h/2,
+                      s*.60,
+                      BLACK,
+                      max(2,int(s*.045))
                   )
 
-              save_png(
-                  im,
-                  path
-              )
+              save(im,path)
 
           for p in glob.glob(
-              os.path.join(
-                  IMG,
-                  "maintabIco*.png"
-              )
+              DIR+"/maintabIco*.png"
           ):
-              make_tab_icon(p)
+              tab(p)
 
-          # =========================================================
-          # 預設頭像：黑貓
-          # =========================================================
+          # =====================================================
+          # TAB BAR BACKGROUND
+          # =====================================================
 
-          profile = os.path.join(
-              IMG,
+          for p in glob.glob(
+              DIR+"/maintabBgImage@*.png"
+          ):
+
+              old=open_rgba(p)
+
+              w,h=old.size
+
+              im=Image.new(
+                  "RGBA",
+                  (w,h),
+                  WHITE
+              )
+
+              d=ImageDraw.Draw(im)
+
+              d.line(
+                  (0,1,w,1),
+                  fill=(25,25,25,70),
+                  width=max(1,h//40)
+              )
+
+              save(im,p)
+
+          # =====================================================
+          # PROFILE PLACEHOLDER
+          # =====================================================
+
+          profile=os.path.join(
+              DIR,
               "profileImg01@3x.png"
           )
 
           if os.path.exists(profile):
-              old = open_rgba(profile)
 
-              w, h = old.size
+              old=open_rgba(profile)
 
-              im = Image.new(
+              w,h=old.size
+
+              im=Image.new(
                   "RGBA",
-                  (w, h),
-                  (255,255,255,255)
-              )
-
-              d = ImageDraw.Draw(im)
-
-              draw_cat(
-                  d,
-                  w/2,
-                  h/2,
-                  min(w,h)*0.78,
-                  (20,20,20,255),
-                  max(
-                      3,
-                      int(
-                          min(w,h)
-                          * 0.025
-                      )
-                  ),
-                  filled=True
-              )
-
-              save_png(
-                  im,
-                  profile
-              )
-
-          # =========================================================
-          # 加好友：愛心＋
-          # =========================================================
-
-          for p in glob.glob(
-              os.path.join(
-                  IMG,
-                  "findBtnAddFriend@*.png"
-              )
-          ):
-              old = open_rgba(p)
-
-              w, h = old.size
-
-              im = Image.new(
-                  "RGBA",
-                  (w, h),
+                  (w,h),
                   (0,0,0,0)
               )
 
-              d = ImageDraw.Draw(im)
+              d=ImageDraw.Draw(im)
 
-              c = (
-                  20,
-                  20,
-                  20,
-                  255
-              )
-
-              lw = max(
-                  2,
-                  int(
-                      min(w,h)
-                      * 0.07
-                  )
-              )
-
-              draw_heart(
-                  d,
-                  w*0.43,
-                  h*0.52,
-                  min(w,h)*0.6,
-                  c,
-                  lw
-              )
-
-              d.line(
-                  (
-                      w*0.72,
-                      h*0.35,
-                      w*0.72,
-                      h*0.70
-                  ),
-                  fill=c,
-                  width=lw
-              )
-
-              d.line(
-                  (
-                      w*0.58,
-                      h*0.52,
-                      w*0.86,
-                      h*0.52
-                  ),
-                  fill=c,
-                  width=lw
-              )
-
-              save_png(
-                  im,
-                  p
-              )
-
-          # =========================================================
-          # 密碼頁
-          # =========================================================
-
-          passbg = os.path.join(
-              IMG,
-              "passcodeBgImage@3x.png"
-          )
-
-          if os.path.exists(passbg):
-              old = open_rgba(passbg)
-
-              w, h = old.size
-
-              im = Image.new(
-                  "RGBA",
-                  (w, h),
-                  (255,255,255,255)
-              )
-
-              d = ImageDraw.Draw(im)
-
-              c = (
-                  20,
-                  20,
-                  20,
-                  45
-              )
-
-              draw_clover(
-                  d,
-                  w*0.15,
-                  h*0.20,
-                  min(w,h)*0.13,
-                  c,
-                  max(
-                      2,
-                      w//500
-                  )
-              )
-
-              draw_heart(
-                  d,
-                  w*0.84,
-                  h*0.72,
-                  min(w,h)*0.12,
-                  c,
-                  max(
-                      2,
-                      w//500
-                  )
-              )
-
-              save_png(
-                  im,
-                  passbg
-              )
-
-          for p in glob.glob(
-              os.path.join(
-                  IMG,
-                  "passcodeImgCode*.png"
-              )
-          ):
-              old = open_rgba(p)
-
-              w, h = old.size
-
-              selected = (
-                  "Selected"
-                  in p
-              )
-
-              im = Image.new(
-                  "RGBA",
-                  (w, h),
-                  (0,0,0,0)
-              )
-
-              d = ImageDraw.Draw(im)
-
-              c = (
-                  (20,20,20,255)
-                  if selected
-                  else (20,20,20,120)
-              )
-
-              draw_heart(
+              blackcat(
                   d,
                   w/2,
                   h/2,
-                  min(w,h)*0.72,
-                  c,
-                  max(
-                      2,
-                      int(
-                          min(w,h)
-                          * 0.08
-                      )
-                  )
+                  min(w,h)*.90
               )
 
-              save_png(
-                  im,
-                  p
-              )
+              save(im,profile)
 
-          print(
-              "FINAL design generated successfully."
-          )
-
+          print("JIWOONG BW V3 assets generated.")
           PY
 
-      - name: Update CSS colors
-        shell: bash
+      - name: Update theme CSS
         run: |
-          set -e
-
           python3 <<'PY'
           from pathlib import Path
           import re
 
-          path = Path(
+          p=Path(
               "theme/KakaoTalkTheme.css"
           )
 
-          css = path.read_text(
+          css=p.read_text(
               encoding="utf-8",
               errors="ignore"
           )
 
-          css = re.sub(
-              r"-kakaotalk-theme-name:[^;]*;",
+          css=re.sub(
+              r"-kakaotalk-theme-name:[^;]+;",
               "-kakaotalk-theme-name: 'JIWOONG BW';",
               css
           )
 
-          css = re.sub(
-              r"-kakaotalk-theme-id:[^;]*;",
-              "-kakaotalk-theme-id: 'com.jiwoong.bw.final';",
+          css=re.sub(
+              r"-kakaotalk-theme-id:[^;]+;",
+              "-kakaotalk-theme-id: 'com.uo.jiwoong.bw.v3';",
               css
           )
 
-          css = re.sub(
-              r"-kakaotalk-author-name:[^;]*;",
+          css=re.sub(
+              r"-kakaotalk-author-name:[^;]+;",
               "-kakaotalk-author-name: 'UO';",
               css
           )
 
-          # 黑白主色
-          css = css.replace(
-              "background-color: #FFFCEE;",
-              "background-color: #FFFFFF;"
+          # Main palette
+          css=css.replace(
+              "#FFDEDE",
+              "#FCFBF8"
           )
 
-          css = css.replace(
-              "background-color: #FFDEDE;",
-              "background-color: #FFFFFF;"
+          css=css.replace(
+              "#FFFCEE",
+              "#FCFBF8"
           )
 
-          css = css.replace(
+          css=css.replace(
               "#FFF8DA",
-              "#F4F4F4"
+              "#FCFBF8"
           )
 
-          css = css.replace(
-              "#686868",
-              "#171717"
-          )
-
-          css = css.replace(
-              "#797979",
-              "#555555"
-          )
-
-          css = css.replace(
-              "#848484",
-              "#777777"
-          )
-
-          css = css.replace(
-              "#589AC2",
-              "#111111"
-          )
-
-          css = css.replace(
-              "#70C8FF",
-              "#333333"
-          )
-
-          # 送出訊息：白字
-          css = re.sub(
-              r"(MessageCellStyle-Send\s*\{.*?"
-              r"-ios-text-color:)\s*#[0-9A-Fa-f]{6};",
-              r"\1 #FFFFFF;",
+          # Send = white text
+          block=re.search(
+              r"MessageCellStyle-Send\s*\{.*?\}",
               css,
-              flags=re.S
+              re.S
           )
 
-          css = re.sub(
-              r"(MessageCellStyle-Send\s*\{.*?"
-              r"-ios-selected-text-color:)\s*#[0-9A-Fa-f]{6};",
-              r"\1 #FFFFFF;",
+          if block:
+
+              b=block.group(0)
+
+              b=re.sub(
+                  r"-ios-text-color:\s*#[0-9A-Fa-f]{6};",
+                  "-ios-text-color: #FFFFFF;",
+                  b
+              )
+
+              b=re.sub(
+                  r"-ios-selected-text-color:\s*#[0-9A-Fa-f]{6};",
+                  "-ios-selected-text-color: #FFFFFF;",
+                  b
+              )
+
+              css=(
+                  css[:block.start()]
+                  +b+
+                  css[block.end():]
+              )
+
+          # Receive = black text
+          block=re.search(
+              r"MessageCellStyle-Receive\s*\{.*?\}",
               css,
-              flags=re.S
+              re.S
           )
 
-          # 收到訊息：黑字
-          css = re.sub(
-              r"(MessageCellStyle-Receive\s*\{.*?"
-              r"-ios-text-color:)\s*#[0-9A-Fa-f]{6};",
-              r"\1 #171717;",
-              css,
-              flags=re.S
-          )
+          if block:
 
-          css = re.sub(
-              r"(MessageCellStyle-Receive\s*\{.*?"
-              r"-ios-selected-text-color:)\s*#[0-9A-Fa-f]{6};",
-              r"\1 #171717;",
-              css,
-              flags=re.S
-          )
+              b=block.group(0)
 
-          path.write_text(
+              b=re.sub(
+                  r"-ios-text-color:\s*#[0-9A-Fa-f]{6};",
+                  "-ios-text-color: #171717;",
+                  b
+              )
+
+              b=re.sub(
+                  r"-ios-selected-text-color:\s*#[0-9A-Fa-f]{6};",
+                  "-ios-selected-text-color: #171717;",
+                  b
+              )
+
+              css=(
+                  css[:block.start()]
+                  +b+
+                  css[block.end():]
+              )
+
+          p.write_text(
               css,
               encoding="utf-8"
           )
-
-          print(
-              "CSS updated successfully."
-          )
-
           PY
 
-      - name: Repack final ktheme
-        shell: bash
+      - name: Package
         run: |
-          set -e
-
           rm -f JIWOONG_BW.ktheme
 
           cd theme
@@ -1612,22 +1235,18 @@ jobs:
 
           unzip -t JIWOONG_BW.ktheme
 
-          echo "FINAL THEME:"
           ls -lh JIWOONG_BW.ktheme
 
-      - name: Commit final theme
-        shell: bash
+      - name: Commit result
         run: |
-          set -e
-
           git config user.name "github-actions[bot]"
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
 
           git add JIWOONG_BW.ktheme
 
           if git diff --cached --quiet; then
-            echo "No changes."
+            echo "Nothing changed."
           else
-            git commit -m "Build final JIWOONG BW theme"
+            git commit -m "Build JIWOONG BW V3"
             git push
           fi
