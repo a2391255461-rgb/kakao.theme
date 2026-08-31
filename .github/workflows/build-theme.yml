@@ -1,4 +1,4 @@
-name: Build JIWOONG HEAD TEST
+name: Build JIWOONG BW V7 FINAL
 
 on:
   workflow_dispatch:
@@ -11,44 +11,56 @@ jobs:
     runs-on: ubuntu-latest
 
     steps:
-      - name: Checkout
+      - name: Checkout repository
         uses: actions/checkout@v4
 
-      - name: Install tools
+      - name: Install dependencies
         shell: bash
         run: |
           set -e
+
           sudo apt-get update
           sudo apt-get install -y unzip zip
+
           python3 -m pip install --upgrade pip
           python3 -m pip install pillow rembg onnxruntime
 
-      - name: Extract Mangdaeng base
+      # ============================================================
+      # 1. START AGAIN FROM ORIGINAL MANGDAENG
+      # ============================================================
+
+      - name: Extract original Mangdaeng
         shell: bash
         run: |
           set -e
 
           rm -rf theme
-          mkdir theme
+          mkdir -p theme
 
           unzip -q mangdaeng.ktheme -d theme
 
           test -f theme/KakaoTalkTheme.css
           test -d theme/Images
 
-      - name: Create Jiwoong transparent head
+          echo "Mangdaeng base extracted."
+
+      # ============================================================
+      # 2. MAKE JIWOONG HEAD
+      #
+      # IMPORTANT:
+      # Only white towel + head/face.
+      # Remove body/background.
+      # ============================================================
+
+      - name: Create clean Jiwoong head
         shell: bash
         run: |
           set -e
 
           python3 <<'PY'
-          from PIL import Image
+          from PIL import Image, ImageFilter
           from rembg import remove
           from pathlib import Path
-
-          # ==========================================================
-          # SOURCE PHOTO
-          # ==========================================================
 
           candidates = [
               Path("IMG_5895.png"),
@@ -65,53 +77,42 @@ jobs:
 
           if source is None:
               raise FileNotFoundError(
-                  "Cannot find IMG_5895.png / jpeg / jpg"
+                  "IMG_5895.png / jpeg / jpg not found."
               )
 
-          im = Image.open(source).convert("RGBA")
+          original = Image.open(source).convert("RGBA")
 
-          w, h = im.size
+          W, H = original.size
 
           print("Source:", source)
-          print("Size:", im.size)
+          print("Original size:", original.size)
 
-          # ==========================================================
-          # CROP CENTER PERSON
-          #
-          # Keep white towel + entire face.
-          # This intentionally keeps more area than V5.
-          # ==========================================================
+          # --------------------------------------------------------
+          # Center person crop
+          # Keep the complete white towel and face.
+          # --------------------------------------------------------
 
-          left   = int(w * 0.335)
-          right  = int(w * 0.665)
+          x1 = int(W * 0.325)
+          x2 = int(W * 0.675)
 
-          top    = int(h * 0.015)
-          bottom = int(h * 0.995)
+          y1 = int(H * 0.000)
+          y2 = int(H * 0.985)
 
-          crop = im.crop(
-              (
-                  left,
-                  top,
-                  right,
-                  bottom
-              )
+          person = original.crop(
+              (x1, y1, x2, y2)
           )
 
-          # ==========================================================
-          # REMOVE BACKGROUND
-          # ==========================================================
+          # --------------------------------------------------------
+          # AI background removal
+          # --------------------------------------------------------
 
           cut = remove(
-              crop,
+              person,
               alpha_matting=True,
-              alpha_matting_foreground_threshold=240,
-              alpha_matting_background_threshold=15,
-              alpha_matting_erode_size=5
+              alpha_matting_foreground_threshold=235,
+              alpha_matting_background_threshold=20,
+              alpha_matting_erode_size=4,
           ).convert("RGBA")
-
-          # ==========================================================
-          # TIGHT ALPHA CROP
-          # ==========================================================
 
           alpha = cut.getchannel("A")
 
@@ -120,111 +121,899 @@ jobs:
           if bbox:
               cut = cut.crop(bbox)
 
-          # add transparent safety margin
-          pad = max(
-              12,
-              int(cut.width * 0.045)
+          # --------------------------------------------------------
+          # Remove lower body.
+          #
+          # We intentionally retain:
+          # towel
+          # hair/forehead
+          # complete face
+          # chin
+          #
+          # but not shirt/torso.
+          # --------------------------------------------------------
+
+          cw, ch = cut.size
+
+          keep_h = int(ch * 0.67)
+
+          cut = cut.crop(
+              (
+                  0,
+                  0,
+                  cw,
+                  keep_h
+              )
           )
 
-          canvas = Image.new(
+          # --------------------------------------------------------
+          # Soft fade directly below chin instead of hard rectangle.
+          # --------------------------------------------------------
+
+          rgba = cut.copy()
+
+          a = rgba.getchannel("A")
+
+          aw, ah = a.size
+
+          fade_start = int(ah * 0.86)
+
+          pix = a.load()
+
+          for y in range(fade_start, ah):
+
+              ratio = (
+                  1.0
+                  - (
+                      (y - fade_start)
+                      /
+                      max(1, ah - fade_start)
+                  )
+              )
+
+              ratio = max(0.0, min(1.0, ratio))
+
+              for x in range(aw):
+
+                  old = pix[x, y]
+
+                  pix[x, y] = int(
+                      old * ratio
+                  )
+
+          rgba.putalpha(a)
+
+          cut = rgba
+
+          # --------------------------------------------------------
+          # Tight crop again after torso removal
+          # --------------------------------------------------------
+
+          alpha = cut.getchannel("A")
+
+          bbox = alpha.getbbox()
+
+          if bbox:
+              cut = cut.crop(bbox)
+
+          # --------------------------------------------------------
+          # transparent safety margin
+          # --------------------------------------------------------
+
+          pad_x = max(
+              8,
+              int(cut.width * 0.035)
+          )
+
+          pad_y = max(
+              6,
+              int(cut.height * 0.025)
+          )
+
+          result = Image.new(
               "RGBA",
               (
-                  cut.width + pad * 2,
-                  cut.height + pad * 2
+                  cut.width + pad_x * 2,
+                  cut.height + pad_y * 2
               ),
               (0, 0, 0, 0)
           )
 
-          canvas.alpha_composite(
+          result.alpha_composite(
               cut,
               (
-                  pad,
-                  pad
+                  pad_x,
+                  pad_y
               )
           )
 
-          canvas.save(
-              "jiwoong_head_test.png",
+          result.save(
+              "jiwoong_head_final.png",
               "PNG"
           )
 
           print(
-              "Head output:",
-              canvas.size
+              "FINAL JIWOONG HEAD:",
+              result.size
           )
           PY
 
-      - name: Build Jiwoong bubble assets
+      # ============================================================
+      # 3. CREATE FULL THEME ASSETS
+      # ============================================================
+
+      - name: Generate V7 theme artwork
         shell: bash
         run: |
           set -e
 
           python3 <<'PY'
+
           from PIL import Image, ImageDraw
           from pathlib import Path
           import os
           import glob
+          import math
 
           IMG = Path("theme/Images")
 
           HEAD = Image.open(
-              "jiwoong_head_test.png"
+              "jiwoong_head_final.png"
           ).convert("RGBA")
 
-          BLACK = (18,18,18,255)
-          WHITE = (255,255,255,255)
+          BLACK = (16, 16, 16, 255)
 
-          # ==========================================================
-          # IMPORTANT
-          #
-          # Only modify 01 bubbles.
-          #
-          # 02/group bubbles remain simple bubbles.
-          #
-          # The head is placed in the upper decorative zone where
-          # Mangdaeng originally had its mascot.
-          # ==========================================================
+          WHITE = (
+              255,
+              255,
+              255,
+              255
+          )
 
-          def make_first_bubble(path):
+          CREAM = (
+              252,
+              250,
+              245,
+              255
+          )
 
-              original = Image.open(path).convert("RGBA")
+          BLUE = (
+              120,
+              188,
+              226,
+              255
+          )
 
-              w, h = original.size
+          BLUE_LIGHT = (
+              187,
+              224,
+              244,
+              255
+          )
 
-              name = os.path.basename(path)
+          ORANGE = (
+              241,
+              160,
+              49,
+              255
+          )
 
-              send = "Send" in name
-              selected = "Selected" in name
+          YELLOW = (
+              243,
+              201,
+              49,
+              255
+          )
 
-              scale = 3 if "@3x" in name else 2
+          # ========================================================
+          # HIGH RES / ANTIALIAS HELPERS
+          # ========================================================
+
+          AA = 4
+
+          def upscale_size(w, h):
+
+              return (
+                  w * AA,
+                  h * AA
+              )
+
+          def downsample(im, size):
+
+              return im.resize(
+                  size,
+                  Image.Resampling.LANCZOS
+              )
+
+          # ========================================================
+          # DOODLES
+          # ========================================================
+
+          def heart(draw, cx, cy, size, color=BLACK, width=3):
+
+              pts = []
+
+              for i in range(121):
+
+                  t = math.pi * 2 * i / 120
+
+                  x = (
+                      16
+                      * math.sin(t) ** 3
+                  )
+
+                  y = (
+                      13 * math.cos(t)
+                      - 5 * math.cos(2*t)
+                      - 2 * math.cos(3*t)
+                      - math.cos(4*t)
+                  )
+
+                  pts.append(
+                      (
+                          cx + x * size / 34,
+                          cy - y * size / 34
+                      )
+                  )
+
+              draw.line(
+                  pts,
+                  fill=color,
+                  width=width,
+                  joint="curve"
+              )
+
+          def sparkle(draw, cx, cy, size, color=BLACK, width=3):
+
+              pts = [
+                  (cx, cy-size),
+                  (cx+size*.14, cy-size*.14),
+                  (cx+size*.45, cy),
+                  (cx+size*.14, cy+size*.14),
+                  (cx, cy+size),
+                  (cx-size*.14, cy+size*.14),
+                  (cx-size*.45, cy),
+                  (cx-size*.14, cy-size*.14),
+                  (cx, cy-size),
+              ]
+
+              draw.line(
+                  pts,
+                  fill=color,
+                  width=width,
+                  joint="curve"
+              )
+
+          def flower(draw, cx, cy, size, color=BLACK, width=3):
+
+              r = size * .22
+
+              positions = [
+                  (cx, cy-size*.25),
+                  (cx+size*.25, cy),
+                  (cx, cy+size*.25),
+                  (cx-size*.25, cy),
+              ]
+
+              for x,y in positions:
+
+                  draw.ellipse(
+                      (
+                          x-r,
+                          y-r,
+                          x+r,
+                          y+r
+                      ),
+                      outline=color,
+                      width=width
+                  )
+
+              draw.ellipse(
+                  (
+                      cx-size*.07,
+                      cy-size*.07,
+                      cx+size*.07,
+                      cy+size*.07
+                  ),
+                  fill=color
+              )
+
+          def bow(draw, cx, cy, size, color=BLACK, width=3):
+
+              draw.ellipse(
+                  (
+                      cx-size*.07,
+                      cy-size*.07,
+                      cx+size*.07,
+                      cy+size*.07
+                  ),
+                  fill=color
+              )
+
+              draw.line(
+                  [
+                      (cx-size*.06, cy),
+                      (cx-size*.43, cy-size*.23),
+                      (cx-size*.35, cy+size*.20),
+                      (cx-size*.06, cy),
+                  ],
+                  fill=color,
+                  width=width,
+                  joint="curve"
+              )
+
+              draw.line(
+                  [
+                      (cx+size*.06, cy),
+                      (cx+size*.43, cy-size*.23),
+                      (cx+size*.35, cy+size*.20),
+                      (cx+size*.06, cy),
+                  ],
+                  fill=color,
+                  width=width,
+                  joint="curve"
+              )
+
+          # ========================================================
+          # BUTTERFLY
+          # ========================================================
+
+          def butterfly(draw, cx, cy, size, width=3):
+
+              draw.ellipse(
+                  (
+                      cx-size*.48,
+                      cy-size*.39,
+                      cx-size*.03,
+                      cy+size*.03
+                  ),
+                  fill=BLUE_LIGHT,
+                  outline=BLACK,
+                  width=width
+              )
+
+              draw.ellipse(
+                  (
+                      cx+size*.03,
+                      cy-size*.39,
+                      cx+size*.48,
+                      cy+size*.03
+                  ),
+                  fill=BLUE_LIGHT,
+                  outline=BLACK,
+                  width=width
+              )
+
+              draw.ellipse(
+                  (
+                      cx-size*.35,
+                      cy-size*.01,
+                      cx-size*.02,
+                      cy+size*.34
+                  ),
+                  fill=BLUE,
+                  outline=BLACK,
+                  width=width
+              )
+
+              draw.ellipse(
+                  (
+                      cx+size*.02,
+                      cy-size*.01,
+                      cx+size*.35,
+                      cy+size*.34
+                  ),
+                  fill=BLUE,
+                  outline=BLACK,
+                  width=width
+              )
+
+              draw.line(
+                  (
+                      cx,
+                      cy-size*.15,
+                      cx,
+                      cy+size*.28
+                  ),
+                  fill=BLACK,
+                  width=width
+              )
+
+              draw.line(
+                  (
+                      cx,
+                      cy-size*.14,
+                      cx-size*.15,
+                      cy-size*.35
+                  ),
+                  fill=BLACK,
+                  width=max(1,width-1)
+              )
+
+              draw.line(
+                  (
+                      cx,
+                      cy-size*.14,
+                      cx+size*.15,
+                      cy-size*.35
+                  ),
+                  fill=BLACK,
+                  width=max(1,width-1)
+              )
+
+          # ========================================================
+          # PENGUIN
+          # ========================================================
+
+          def penguin(draw, cx, cy, size):
+
+              body_w = size*.31
+              body_h = size*.38
+
+              draw.ellipse(
+                  (
+                      cx-body_w,
+                      cy-body_h,
+                      cx+body_w,
+                      cy+body_h
+                  ),
+                  fill=BLACK
+              )
+
+              draw.ellipse(
+                  (
+                      cx-body_w*.62,
+                      cy-body_h*.46,
+                      cx+body_w*.62,
+                      cy+body_h*.70
+                  ),
+                  fill=WHITE
+              )
+
+              eye = max(
+                  2,
+                  int(size*.035)
+              )
+
+              for ex in [
+                  cx-body_w*.29,
+                  cx+body_w*.29
+              ]:
+
+                  draw.ellipse(
+                      (
+                          ex-eye,
+                          cy-body_h*.29-eye,
+                          ex+eye,
+                          cy-body_h*.29+eye
+                      ),
+                      fill=BLACK
+                  )
+
+              draw.polygon(
+                  [
+                      (
+                          cx-size*.09,
+                          cy-body_h*.08
+                      ),
+                      (
+                          cx+size*.09,
+                          cy-body_h*.08
+                      ),
+                      (
+                          cx,
+                          cy+size*.055
+                      )
+                  ],
+                  fill=ORANGE
+              )
+
+          # ========================================================
+          # TIGER
+          # ========================================================
+
+          def tiger(draw, cx, cy, size):
+
+              r = size*.32
+
+              lw = max(
+                  2,
+                  int(size*.035)
+              )
+
+              draw.ellipse(
+                  (
+                      cx-r*1.02,
+                      cy-r*1.05,
+                      cx-r*.36,
+                      cy-r*.36
+                  ),
+                  fill=ORANGE,
+                  outline=BLACK,
+                  width=lw
+              )
+
+              draw.ellipse(
+                  (
+                      cx+r*.36,
+                      cy-r*1.05,
+                      cx+r*1.02,
+                      cy-r*.36
+                  ),
+                  fill=ORANGE,
+                  outline=BLACK,
+                  width=lw
+              )
+
+              draw.ellipse(
+                  (
+                      cx-r,
+                      cy-r,
+                      cx+r,
+                      cy+r
+                  ),
+                  fill=ORANGE,
+                  outline=BLACK,
+                  width=lw
+              )
+
+              draw.ellipse(
+                  (
+                      cx-r*.50,
+                      cy+r*.01,
+                      cx+r*.50,
+                      cy+r*.65
+                  ),
+                  fill=WHITE
+              )
+
+              stripe = max(
+                  2,
+                  int(size*.045)
+              )
+
+              draw.line(
+                  (
+                      cx,
+                      cy-r*.90,
+                      cx,
+                      cy-r*.42
+                  ),
+                  fill=BLACK,
+                  width=stripe
+              )
+
+              draw.line(
+                  (
+                      cx-r*.45,
+                      cy-r*.78,
+                      cx-r*.25,
+                      cy-r*.38
+                  ),
+                  fill=BLACK,
+                  width=stripe
+              )
+
+              draw.line(
+                  (
+                      cx+r*.45,
+                      cy-r*.78,
+                      cx+r*.25,
+                      cy-r*.38
+                  ),
+                  fill=BLACK,
+                  width=stripe
+              )
+
+              eye = max(
+                  2,
+                  int(size*.035)
+              )
+
+              for ex in [
+                  cx-r*.36,
+                  cx+r*.36
+              ]:
+
+                  draw.ellipse(
+                      (
+                          ex-eye,
+                          cy-r*.05-eye,
+                          ex+eye,
+                          cy-r*.05+eye
+                      ),
+                      fill=BLACK
+                  )
+
+          # ========================================================
+          # BLACK CAT
+          # ========================================================
+
+          def black_cat(draw, cx, cy, size):
+
+              r = size*.32
+
+              draw.polygon(
+                  [
+                      (
+                          cx-r*.86,
+                          cy-r*.48
+                      ),
+                      (
+                          cx-r*.93,
+                          cy-r*1.18
+                      ),
+                      (
+                          cx-r*.17,
+                          cy-r*.78
+                      )
+                  ],
+                  fill=BLACK
+              )
+
+              draw.polygon(
+                  [
+                      (
+                          cx+r*.86,
+                          cy-r*.48
+                      ),
+                      (
+                          cx+r*.93,
+                          cy-r*1.18
+                      ),
+                      (
+                          cx+r*.17,
+                          cy-r*.78
+                      )
+                  ],
+                  fill=BLACK
+              )
+
+              draw.ellipse(
+                  (
+                      cx-r,
+                      cy-r,
+                      cx+r,
+                      cy+r
+                  ),
+                  fill=BLACK
+              )
+
+              eye = max(
+                  2,
+                  int(size*.052)
+              )
+
+              for ex in [
+                  cx-r*.35,
+                  cx+r*.35
+              ]:
+
+                  draw.ellipse(
+                      (
+                          ex-eye,
+                          cy-eye,
+                          ex+eye,
+                          cy+eye
+                      ),
+                      fill=YELLOW
+                  )
+
+                  draw.rectangle(
+                      (
+                          ex-eye*.10,
+                          cy-eye*.72,
+                          ex+eye*.10,
+                          cy+eye*.72
+                      ),
+                      fill=BLACK
+                  )
+
+          # ========================================================
+          # BACKGROUNDS
+          # ========================================================
+
+          def make_background(path, chat=False):
+
+              old = Image.open(
+                  path
+              ).convert("RGBA")
+
+              w,h = old.size
 
               im = Image.new(
                   "RGBA",
-                  (w, h),
-                  (0,0,0,0)
+                  (w,h),
+                  CREAM
               )
 
               d = ImageDraw.Draw(im)
 
-              # ------------------------------------------------------
-              # Bubble body
-              # ------------------------------------------------------
-
-              body_top = int(h * 0.39)
-
-              margin = max(
+              line = max(
                   2,
-                  int(scale * 1.2)
+                  int(w/520)
               )
 
-              radius = int(
-                  min(w, h) * 0.19
+              size = w/14
+
+              # intentionally sparse
+              # target mockup = lots of white breathing room
+
+              heart(
+                  d,
+                  w*.08,
+                  h*.10,
+                  size*.31,
+                  BLACK,
+                  line
               )
+
+              sparkle(
+                  d,
+                  w*.88,
+                  h*.14,
+                  size*.20,
+                  BLACK,
+                  line
+              )
+
+              flower(
+                  d,
+                  w*.10,
+                  h*.33,
+                  size*.28,
+                  BLACK,
+                  line
+              )
+
+              heart(
+                  d,
+                  w*.91,
+                  h*.43,
+                  size*.28,
+                  BLACK,
+                  line
+              )
+
+              bow(
+                  d,
+                  w*.10,
+                  h*.66,
+                  size*.28,
+                  BLACK,
+                  line
+              )
+
+              sparkle(
+                  d,
+                  w*.87,
+                  h*.70,
+                  size*.18,
+                  BLACK,
+                  line
+              )
+
+              if chat:
+
+                  butterfly(
+                      d,
+                      w*.88,
+                      h*.83,
+                      size*.34,
+                      line
+                  )
+
+              else:
+
+                  butterfly(
+                      d,
+                      w*.86,
+                      h*.80,
+                      size*.36,
+                      line
+                  )
+
+              heart(
+                  d,
+                  w*.10,
+                  h*.91,
+                  size*.29,
+                  BLACK,
+                  line
+              )
+
+              im.save(
+                  path,
+                  "PNG",
+                  optimize=True
+              )
+
+          main_bg = IMG / "mainBgImage@3x.png"
+
+          if main_bg.exists():
+              make_background(
+                  main_bg,
+                  False
+              )
+
+          chat_bg = IMG / "chatroomBgImage@3x.png"
+
+          if chat_bg.exists():
+              make_background(
+                  chat_bg,
+                  True
+              )
+
+          # ========================================================
+          # CAT BUBBLE
+          #
+          # THE IMPORTANT PART
+          #
+          # 01:
+          #   head + cat ears + bubble
+          #
+          # 02:
+          #   matching simple rounded bubble
+          #
+          # We preserve original image dimensions because KakaoTalk's
+          # cap-inset system expects these sizes.
+          # ========================================================
+
+          def draw_cat_bubble(path):
+
+              old = Image.open(
+                  path
+              ).convert("RGBA")
+
+              w,h = old.size
+
+              name = os.path.basename(
+                  path
+              )
+
+              send = "Send" in name
+
+              selected = (
+                  "Selected"
+                  in name
+              )
+
+              first = (
+                  "01"
+                  in name
+              )
+
+              scale = (
+                  3
+                  if "@3x"
+                  in name
+                  else 2
+              )
+
+              # draw at 4x resolution
+              W = w * AA
+              H = h * AA
+
+              im = Image.new(
+                  "RGBA",
+                  (
+                      W,
+                      H
+                  ),
+                  (
+                      0,
+                      0,
+                      0,
+                      0
+                  )
+              )
+
+              d = ImageDraw.Draw(im)
 
               if send:
 
                   fill = (
-                      (43,43,43,255)
+                      (35,35,35,255)
                       if selected
                       else BLACK
                   )
@@ -234,24 +1023,75 @@ jobs:
               else:
 
                   fill = (
-                      (246,246,246,255)
+                      (247,247,247,255)
                       if selected
                       else WHITE
                   )
 
                   outline = BLACK
 
-              stroke = max(
-                  2,
-                  int(scale * 1.35)
+              stroke = (
+                  1.6
+                  * scale
+                  * AA
               )
+
+              stroke = max(
+                  4,
+                  int(stroke)
+              )
+
+              # ----------------------------------------------------
+              # first bubble has upper decorative region
+              # matching Mangdaeng architecture
+              # ----------------------------------------------------
+
+              if first:
+
+                  if send:
+
+                      body_top = int(
+                          H * .34
+                      )
+
+                  else:
+
+                      body_top = int(
+                          H * .31
+                      )
+
+              else:
+
+                  body_top = int(
+                      H * .07
+                  )
+
+              margin = int(
+                  1.4
+                  * scale
+                  * AA
+              )
+
+              bottom = (
+                  H
+                  - margin
+              )
+
+              radius = int(
+                  min(W,H)
+                  * .20
+              )
+
+              # ----------------------------------------------------
+              # main rounded body
+              # ----------------------------------------------------
 
               d.rounded_rectangle(
                   (
                       margin,
                       body_top,
-                      w-margin,
-                      h-margin
+                      W-margin,
+                      bottom
                   ),
                   radius=radius,
                   fill=fill,
@@ -259,146 +1099,233 @@ jobs:
                   width=stroke
               )
 
-              # ------------------------------------------------------
-              # CAT EARS
+              # ----------------------------------------------------
+              # clear cat ears
               #
-              # Keep ears small in this test because HEAD is priority.
-              # ------------------------------------------------------
+              # Larger than V6, but still inside non-stretch top zone.
+              # ----------------------------------------------------
 
-              ear_h = int(h * 0.11)
-              ear_w = int(w * 0.15)
+              if first:
 
-              if send:
+                  ear_h = int(
+                      H * .13
+                  )
 
-                  # ears toward left/middle because head is on right
-                  centers = [
-                      int(w * 0.25),
-                      int(w * 0.48)
-                  ]
+                  ear_w = int(
+                      W * .18
+                  )
 
-              else:
+                  # center-position ears
+                  # leaves one side available for head
 
-                  # ears toward right/middle because head is on left
-                  centers = [
-                      int(w * 0.52),
-                      int(w * 0.75)
-                  ]
+                  if send:
 
-              for cx in centers:
+                      centers = [
+                          W*.27,
+                          W*.50
+                      ]
 
-                  pts = [
-                      (
-                          cx-ear_w//2,
-                          body_top+2
-                      ),
-                      (
-                          cx,
-                          body_top-ear_h
-                      ),
-                      (
-                          cx+ear_w//2,
-                          body_top+2
+                  else:
+
+                      centers = [
+                          W*.50,
+                          W*.73
+                      ]
+
+                  for cx in centers:
+
+                      cx = int(cx)
+
+                      pts = [
+                          (
+                              cx-ear_w//2,
+                              body_top+stroke//2
+                          ),
+                          (
+                              cx-ear_w*.27,
+                              body_top-ear_h*.47
+                          ),
+                          (
+                              cx,
+                              body_top-ear_h
+                          ),
+                          (
+                              cx+ear_w*.27,
+                              body_top-ear_h*.47
+                          ),
+                          (
+                              cx+ear_w//2,
+                              body_top+stroke//2
+                          ),
+                      ]
+
+                      pts = [
+                          (
+                              int(x),
+                              int(y)
+                          )
+                          for x,y
+                          in pts
+                      ]
+
+                      d.polygon(
+                          pts,
+                          fill=fill
                       )
-                  ]
 
-                  d.polygon(
-                      pts,
-                      fill=fill
+                      d.line(
+                          pts,
+                          fill=outline,
+                          width=stroke,
+                          joint="curve"
+                      )
+
+                      # clean base seam
+                      d.line(
+                          (
+                              cx-ear_w//2+stroke,
+                              body_top+stroke//2,
+                              cx+ear_w//2-stroke,
+                              body_top+stroke//2
+                          ),
+                          fill=fill,
+                          width=stroke+AA*2
+                      )
+
+              # ----------------------------------------------------
+              # downsample first
+              # ----------------------------------------------------
+
+              im = downsample(
+                  im,
+                  (
+                      w,
+                      h
                   )
+              )
 
-                  d.line(
-                      pts,
-                      fill=outline,
-                      width=stroke,
-                      joint="curve"
-                  )
-
-                  # erase base seam
-                  d.line(
-                      (
-                          cx-ear_w//2+stroke,
-                          body_top+stroke,
-                          cx+ear_w//2-stroke,
-                          body_top+stroke
-                      ),
-                      fill=fill,
-                      width=stroke+3
-                  )
-
-              # ------------------------------------------------------
+              # ----------------------------------------------------
               # JIWOONG HEAD
               #
-              # Critical change:
-              # head is entirely in the upper mascot/decorative zone.
-              # We do NOT put the face inside the stretchable body.
-              # ------------------------------------------------------
+              # IMPORTANT:
+              # Paste AFTER bubble is rendered.
+              #
+              # It stays entirely in the original Mangdaeng upper
+              # mascot area, which is preserved by the cap inset.
+              # ----------------------------------------------------
 
-              target_h = int(h * 0.50)
+              if first:
 
-              ratio = target_h / HEAD.height
+                  if "@3x" in name:
 
-              target_w = int(
-                  HEAD.width * ratio
-              )
+                      if send:
+                          target_h = int(
+                              h * .51
+                          )
+                      else:
+                          target_h = int(
+                              h * .49
+                          )
 
-              # prevent over-width
-              max_w = int(w * 0.43)
+                  else:
 
-              if target_w > max_w:
+                      if send:
+                          target_h = int(
+                              h * .50
+                          )
+                      else:
+                          target_h = int(
+                              h * .48
+                          )
 
-                  ratio = max_w / HEAD.width
-
-                  target_w = max_w
-
-                  target_h = int(
-                      HEAD.height * ratio
-                  )
-
-              head = HEAD.resize(
-                  (
-                      target_w,
+                  ratio = (
                       target_h
-                  ),
-                  Image.Resampling.LANCZOS
-              )
-
-              if send:
-
-                  # right side, like target mockup
-                  x = int(w * 0.95) - target_w
-
-              else:
-
-                  # left side
-                  x = int(w * 0.05)
-
-              # bottom of head overlaps bubble very slightly
-              y = body_top - int(target_h * 0.82)
-
-              # ensure no clipping
-              x = max(
-                  1,
-                  min(
-                      x,
-                      w-target_w-1
+                      /
+                      HEAD.height
                   )
-              )
 
-              y = max(
-                  1,
-                  min(
-                      y,
-                      h-target_h-1
+                  target_w = int(
+                      HEAD.width
+                      * ratio
                   )
-              )
 
-              im.alpha_composite(
-                  head,
-                  (
-                      x,
-                      y
+                  max_width = int(
+                      w * .45
                   )
-              )
+
+                  if target_w > max_width:
+
+                      ratio = (
+                          max_width
+                          /
+                          HEAD.width
+                      )
+
+                      target_w = max_width
+
+                      target_h = int(
+                          HEAD.height
+                          * ratio
+                      )
+
+                  head = HEAD.resize(
+                      (
+                          target_w,
+                          target_h
+                      ),
+                      Image.Resampling.LANCZOS
+                  )
+
+                  # ----------------------------------------------
+                  # receive = LEFT
+                  # send = RIGHT
+                  # ----------------------------------------------
+
+                  if send:
+
+                      x = (
+                          w
+                          - target_w
+                          - max(
+                              1,
+                              int(w*.015)
+                          )
+                      )
+
+                  else:
+
+                      x = max(
+                          1,
+                          int(w*.015)
+                      )
+
+                  # head overlaps top border slightly
+                  # just like target mockup sticker
+
+                  y = max(
+                      0,
+                      int(
+                          body_top/AA
+                          - target_h*.72
+                      )
+                  )
+
+                  # never crop horizontally
+                  x = max(
+                      0,
+                      min(
+                          x,
+                          w-target_w
+                      )
+                  )
+
+                  im.alpha_composite(
+                      head,
+                      (
+                          x,
+                          y
+                      )
+                  )
 
               im.save(
                   path,
@@ -408,43 +1335,262 @@ jobs:
 
               print(
                   name,
-                  "bubble:",
-                  (w,h),
-                  "head:",
-                  (target_w,target_h),
-                  "position:",
-                  (x,y)
+                  "done"
               )
 
-          # ONLY FIRST MESSAGE BUBBLES
-          patterns = [
-              "chatroomBubbleSend01@2x.png",
-              "chatroomBubbleSend01@3x.png",
-              "chatroomBubbleSend01Selected@2x.png",
-              "chatroomBubbleSend01Selected@3x.png",
+          for p in glob.glob(
+              str(
+                  IMG
+                  /
+                  "chatroomBubble*.png"
+              )
+          ):
 
-              "chatroomBubbleReceive01@2x.png",
-              "chatroomBubbleReceive01@3x.png",
-              "chatroomBubbleReceive01Selected@2x.png",
-              "chatroomBubbleReceive01Selected@3x.png",
-          ]
+              draw_cat_bubble(
+                  p
+              )
 
-          for filename in patterns:
+          # ========================================================
+          # TAB ICONS
+          # ========================================================
 
-              p = IMG / filename
+          def tab_icon(path):
 
-              if p.exists():
-                  make_first_bubble(p)
+              old = Image.open(
+                  path
+              ).convert("RGBA")
 
-          print("Jiwoong HEAD TEST bubble assets complete.")
+              w,h = old.size
+
+              name = os.path.basename(
+                  path
+              )
+
+              im = Image.new(
+                  "RGBA",
+                  (w,h),
+                  (
+                      0,
+                      0,
+                      0,
+                      0
+                  )
+              )
+
+              d = ImageDraw.Draw(im)
+
+              s = (
+                  min(w,h)
+                  * .75
+              )
+
+              if "Friends" in name:
+
+                  penguin(
+                      d,
+                      w/2,
+                      h/2,
+                      s
+                  )
+
+              elif "Chats" in name:
+
+                  tiger(
+                      d,
+                      w/2,
+                      h/2,
+                      s
+                  )
+
+              elif (
+                  "Now" in name
+                  or
+                  "Call" in name
+              ):
+
+                  black_cat(
+                      d,
+                      w/2,
+                      h/2,
+                      s
+                  )
+
+              elif (
+                  "Shopping" in name
+                  or
+                  "Piccoma" in name
+              ):
+
+                  butterfly(
+                      d,
+                      w/2,
+                      h/2,
+                      s*.82,
+                      max(
+                          2,
+                          int(s*.035)
+                      )
+                  )
+
+              elif "More" in name:
+
+                  # Jiwoong head for More tab
+                  hh = int(
+                      h*.80
+                  )
+
+                  ratio = (
+                      hh
+                      /
+                      HEAD.height
+                  )
+
+                  ww = int(
+                      HEAD.width
+                      * ratio
+                  )
+
+                  if ww > w*.86:
+
+                      ratio = (
+                          w*.86
+                          /
+                          HEAD.width
+                      )
+
+                      ww = int(
+                          HEAD.width
+                          * ratio
+                      )
+
+                      hh = int(
+                          HEAD.height
+                          * ratio
+                      )
+
+                  head = HEAD.resize(
+                      (
+                          ww,
+                          hh
+                      ),
+                      Image.Resampling.LANCZOS
+                  )
+
+                  im.alpha_composite(
+                      head,
+                      (
+                          int(
+                              (w-ww)/2
+                          ),
+                          int(
+                              (h-hh)/2
+                          )
+                      )
+                  )
+
+              else:
+
+                  heart(
+                      d,
+                      w/2,
+                      h/2,
+                      s*.55,
+                      BLACK,
+                      max(
+                          2,
+                          int(s*.05)
+                      )
+                  )
+
+              im.save(
+                  path,
+                  "PNG",
+                  optimize=True
+              )
+
+          for p in glob.glob(
+              str(
+                  IMG
+                  /
+                  "maintabIco*.png"
+              )
+          ):
+
+              tab_icon(
+                  p
+              )
+
+          # ========================================================
+          # TAB BACKGROUND
+          # ========================================================
+
+          for p in glob.glob(
+              str(
+                  IMG
+                  /
+                  "maintabBgImage@*.png"
+              )
+          ):
+
+              old = Image.open(
+                  p
+              ).convert("RGBA")
+
+              w,h = old.size
+
+              im = Image.new(
+                  "RGBA",
+                  (
+                      w,
+                      h
+                  ),
+                  WHITE
+              )
+
+              d = ImageDraw.Draw(im)
+
+              d.line(
+                  (
+                      0,
+                      1,
+                      w,
+                      1
+                  ),
+                  fill=(
+                      20,
+                      20,
+                      20,
+                      38
+                  ),
+                  width=max(
+                      1,
+                      h//55
+                  )
+              )
+
+              im.save(
+                  p,
+                  "PNG",
+                  optimize=True
+              )
+
+          print(
+              "V7 artwork finished."
+          )
+
           PY
 
-      - name: Update CSS
+      # ============================================================
+      # 4. CSS
+      # ============================================================
+
+      - name: Update V7 CSS
         shell: bash
         run: |
           set -e
 
           python3 <<'PY'
+
           from pathlib import Path
           import re
 
@@ -457,19 +1603,19 @@ jobs:
               errors="ignore"
           )
 
-          # ==========================================================
-          # UNIQUE TEST THEME
-          # ==========================================================
+          # ========================================================
+          # MANIFEST
+          # ========================================================
 
           css = re.sub(
               r"-kakaotalk-theme-name:[^;]*;",
-              "-kakaotalk-theme-name: 'JIWOONG HEAD TEST';",
+              "-kakaotalk-theme-name: 'JIWOONG BW V7';",
               css
           )
 
           css = re.sub(
               r"-kakaotalk-theme-id:[^;]*;",
-              "-kakaotalk-theme-id: 'com.uo.jiwoong.headtest1';",
+              "-kakaotalk-theme-id: 'com.uo.jiwoong.bw.v7';",
               css
           )
 
@@ -479,23 +1625,37 @@ jobs:
               css
           )
 
-          # ==========================================================
-          # SEND TEXT
-          # ==========================================================
+          # ========================================================
+          # SEND
+          #
+          # IMPORTANT:
+          # DO NOT CHANGE ORIGINAL BACKGROUND IMAGE CAP VALUES.
+          #
+          # Original Mangdaeng:
+          # 01 = 21.8px 38.7px
+          #
+          # That upper cap is the zone that protects the head.
+          # ========================================================
 
-          m = re.search(
+          send = re.search(
               r"MessageCellStyle-Send\s*\{.*?\}",
               css,
               re.S
           )
 
-          if m:
+          if send:
 
-              block = m.group(0)
+              block = send.group(0)
 
               block = re.sub(
                   r"-ios-title-edgeinsets:[^;]*;",
-                  "-ios-title-edgeinsets: 31px 28px 10px 28px;",
+                  "-ios-title-edgeinsets: 29px 26px 10px 26px;",
+                  block
+              )
+
+              block = re.sub(
+                  r"-ios-group-title-edgeinsets:[^;]*;",
+                  "-ios-group-title-edgeinsets: 10px 26px 10px 26px;",
                   block
               )
 
@@ -511,29 +1671,45 @@ jobs:
                   block
               )
 
-              css = (
-                  css[:m.start()]
-                  + block +
-                  css[m.end():]
+              block = re.sub(
+                  r"-ios-unread-text-color:[^;]*;",
+                  "-ios-unread-text-color: #D5D5D5;",
+                  block
               )
 
-          # ==========================================================
-          # RECEIVE TEXT
-          # ==========================================================
+              css = (
+                  css[:send.start()]
+                  + block
+                  + css[send.end():]
+              )
 
-          m = re.search(
+          # ========================================================
+          # RECEIVE
+          #
+          # Original Mangdaeng 01:
+          # 40px 32.4px
+          # Keep it.
+          # ========================================================
+
+          receive = re.search(
               r"MessageCellStyle-Receive\s*\{.*?\}",
               css,
               re.S
           )
 
-          if m:
+          if receive:
 
-              block = m.group(0)
+              block = receive.group(0)
 
               block = re.sub(
                   r"-ios-title-edgeinsets:[^;]*;",
-                  "-ios-title-edgeinsets: 31px 28px 10px 28px;",
+                  "-ios-title-edgeinsets: 25px 26px 10px 26px;",
+                  block
+              )
+
+              block = re.sub(
+                  r"-ios-group-title-edgeinsets:[^;]*;",
+                  "-ios-group-title-edgeinsets: 10px 26px 10px 26px;",
                   block
               )
 
@@ -549,10 +1725,16 @@ jobs:
                   block
               )
 
+              block = re.sub(
+                  r"-ios-unread-text-color:[^;]*;",
+                  "-ios-unread-text-color: #777777;",
+                  block
+              )
+
               css = (
-                  css[:m.start()]
-                  + block +
-                  css[m.end():]
+                  css[:receive.start()]
+                  + block
+                  + css[receive.end():]
               )
 
           p.write_text(
@@ -560,27 +1742,38 @@ jobs:
               encoding="utf-8"
           )
 
-          print("HEAD TEST CSS complete.")
+          print(
+              "V7 CSS complete."
+          )
+
           PY
 
-      - name: Package theme
+      # ============================================================
+      # 5. PACKAGE
+      # ============================================================
+
+      - name: Package V7
         shell: bash
         run: |
           set -e
 
-          rm -f JIWOONG_HEAD_TEST.ktheme
+          rm -f JIWOONG_BW.ktheme
 
           cd theme
 
-          zip -q -r ../JIWOONG_HEAD_TEST.ktheme .
+          zip -q -r ../JIWOONG_BW.ktheme .
 
           cd ..
 
-          unzip -t JIWOONG_HEAD_TEST.ktheme
+          unzip -t JIWOONG_BW.ktheme
 
-          ls -lh JIWOONG_HEAD_TEST.ktheme
+          ls -lh JIWOONG_BW.ktheme
 
-      - name: Publish test theme
+      # ============================================================
+      # 6. PUSH
+      # ============================================================
+
+      - name: Publish V7
         shell: bash
         run: |
           set -e
@@ -588,11 +1781,15 @@ jobs:
           git config user.name "github-actions[bot]"
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
 
-          git add JIWOONG_HEAD_TEST.ktheme
+          git add JIWOONG_BW.ktheme
 
           if git diff --cached --quiet; then
+
             echo "No changes."
+
           else
-            git commit -m "Build Jiwoong head test"
+
+            git commit -m "Build JIWOONG BW V7 FINAL"
             git push
+
           fi
